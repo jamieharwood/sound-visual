@@ -62,7 +62,7 @@ all remembered.
   - **Tilt view** – move the phone to look around, as if through a window: turn it left/right to
     swing around the graph, tip it back (as if looking down at a table) to rise above it, twist
     it like a steering wheel and the graph stays level with the room, and
-    move the phone away from you to zoom in or pull it back to zoom out (2× per 20 cm). The
+    pull the phone towards you to zoom in or push it away to zoom out (2× per 20 cm). The
     pose you're holding when you switch it on is the centre; drag to adjust, pinch to change the
     base zoom, double-tap to re-centre on your current pose.
     - Turning uses the game rotation vector sensor (200 Hz).

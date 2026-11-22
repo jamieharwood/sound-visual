@@ -27,7 +27,8 @@ import kotlin.math.sqrt
  *  - twisting it like a steering wheel rolls the view so the graph stays level with the room.
  *
  * Zoom comes from [setPushPull], fed with the phone's real movement measured by [ArTracker]:
- * moving the phone away from you zooms in, pulling it back zooms out.
+ * pulling the phone towards you zooms in (like bringing a picture closer to look at it),
+ * pushing it away zooms out.
  */
 class TiltController(
     context: Context,
@@ -98,9 +99,10 @@ class TiltController(
         val base = baseDistance.coerceAtLeast(1f)
         val lo = ln(MIN_DISTANCE / base)
         val hi = ln(MAX_DISTANCE / base)
-        zoomLog = (-forwardMetres * ZOOM_PER_METRE).coerceIn(lo, hi)
+        // Forward (away from you) = larger camera distance = zoom out.
+        zoomLog = (forwardMetres * ZOOM_PER_METRE).coerceIn(lo, hi)
         applyZoom()
-        return -zoomLog / ZOOM_PER_METRE
+        return zoomLog / ZOOM_PER_METRE
     }
 
     private fun applyZoom() {
