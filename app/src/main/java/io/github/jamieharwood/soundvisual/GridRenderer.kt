@@ -3,14 +3,17 @@ package io.github.jamieharwood.soundvisual
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
+import android.os.SystemClock
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.random.Random
 
 /**
  * Draws the spectrum history as a 3D matrix of bars:
@@ -41,7 +44,57 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     @Volatile var pitchDeg = DEFAULT_PITCH
     @Volatile var distance = DEFAULT_DISTANCE
 
-    fun resetCamera() { yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE }
+    /** Point the camera looks at, offset from the grid centre (world units). */
+    @Volatile var panX = 0f
+    @Volatile var panZ = 0f
+
+    fun resetCamera() {
+        yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE
+        panX = 0f; panZ = 0f
+        tourSegmentMs = 0L
+    }
+
+    // --- Auto view: a slow random tour around the grid ---------------------------------
+
+    /** When true, the camera drifts between random viewpoints (orbit, tilt, zoom and pan). */
+    @Volatile var autoCamera = false
+        set(value) { field = value; tourSegmentMs = 0L }
+
+    @Volatile private var tourPausedUntilMs = 0L
+    private var tourStartMs = 0L
+    @Volatile private var tourSegmentMs = 0L // 0 = pick a new segment from the current view
+    private val tourFrom = FloatArray(5)
+    private val tourTo = FloatArray(5)
+
+    /** The user touched the view: hand them control and resume the tour after a pause. */
+    fun userInteracted() {
+        tourPausedUntilMs = SystemClock.uptimeMillis() + TOUR_RESUME_AFTER_MS
+        tourSegmentMs = 0L
+    }
+
+    private fun updateTour() {
+        if (!autoCamera) return
+        val now = SystemClock.uptimeMillis()
+        if (now < tourPausedUntilMs) return
+        if (tourSegmentMs == 0L || now - tourStartMs >= tourSegmentMs) {
+            // Start the next move from wherever the camera is now, so nothing ever jumps.
+            tourFrom[0] = yawDeg; tourFrom[1] = pitchDeg; tourFrom[2] = distance
+            tourFrom[3] = panX; tourFrom[4] = panZ
+            tourTo[0] = Random.nextFloat() * 140f - 70f        // yaw: left ↔ right of the grid
+            tourTo[1] = 10f + Random.nextFloat() * 52f         // pitch: low sweep ↔ high overview
+            tourTo[2] = 55f + Random.nextFloat() * 85f         // distance: close-up ↔ wide
+            // Close views look at a random region; wide views stay near the centre.
+            val roam = ((140f - tourTo[2]) / 85f).coerceIn(0f, 1f)
+            tourTo[3] = (Random.nextFloat() * 2f - 1f) * halfW * 0.6f * roam
+            tourTo[4] = (Random.nextFloat() * 2f - 1f) * halfD * 0.5f * roam
+            tourStartMs = now
+            tourSegmentMs = (TOUR_MIN_SEGMENT_MS + Random.nextLong(TOUR_EXTRA_SEGMENT_MS))
+        }
+        val t = ((now - tourStartMs).toFloat() / tourSegmentMs).coerceIn(0f, 1f)
+        val e = (0.5 - 0.5 * cos(PI * t)).toFloat() // ease in and out
+        fun lerp(i: Int) = tourFrom[i] + (tourTo[i] - tourFrom[i]) * e
+        yawDeg = lerp(0); pitchDeg = lerp(1); distance = lerp(2); panX = lerp(3); panZ = lerp(4)
+    }
 
     // Filled in by buildLabels(), so they must be declared before `labels`.
     private var historyLabel: Label? = null
@@ -93,14 +146,16 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
 
         // Camera orbiting the centre of the grid.
+        updateTour()
         val yaw = Math.toRadians(yawDeg.toDouble())
         val pitch = Math.toRadians(pitchDeg.toDouble())
         val cy = HEIGHT_SCALE * 0.25f
-        val ex = (distance * sin(yaw) * cos(pitch)).toFloat()
+        val tx = panX
+        val tz = halfD * 0.2f + panZ
+        val ex = tx + (distance * sin(yaw) * cos(pitch)).toFloat()
         val ey = cy + (distance * sin(pitch)).toFloat()
-        val tz = halfD * 0.2f
         val ez = tz + (distance * cos(yaw) * cos(pitch)).toFloat()
-        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, tz, 0f, 1f, 0f)
+        Matrix.setLookAtM(view, 0, ex, ey, ez, tx, cy, tz, 0f, 1f, 0f)
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
         // Upload newest levels.
@@ -332,6 +387,9 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         private const val DEFAULT_YAW = -28f
         private const val DEFAULT_PITCH = 26f
         private const val DEFAULT_DISTANCE = 108f
+        private const val TOUR_MIN_SEGMENT_MS = 6_000L
+        private const val TOUR_EXTRA_SEGMENT_MS = 5_000L
+        private const val TOUR_RESUME_AFTER_MS = 8_000L
 
         private val FREQ_TICKS = floatArrayOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)
         private val DB_TICKS = intArrayOf(-80, -60, -40, -20)

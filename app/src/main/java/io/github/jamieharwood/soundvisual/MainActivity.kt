@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var glView: GLSurfaceView
     private lateinit var overlay: LabelOverlayView
     private lateinit var sourceButton: TextView
+    private lateinit var autoViewButton: TextView
     private lateinit var levelControl: LinearLayout
     private lateinit var levelSlider: SeekBar
     private lateinit var levelText: TextView
@@ -78,6 +79,7 @@ class MainActivity : Activity() {
         if (prefs.getString(KEY_SOURCE, null) == "output") source = CaptureSource.PhoneOutput
         levelControl = buildLevelControl()
         val topBar = buildTopBar()
+        setAutoView(prefs.getBoolean(KEY_AUTO_VIEW, false), save = false)
 
         val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
@@ -94,6 +96,8 @@ class MainActivity : Activity() {
             }
         })
         glView.setOnTouchListener { _, e ->
+            // Any touch hands the camera to the user; Auto view resumes after a pause.
+            if (e.actionMasked == MotionEvent.ACTION_DOWN) renderer.userInteracted()
             scale.onTouchEvent(e)
             gestures.onTouchEvent(e)
             when (e.actionMasked) {
@@ -212,13 +216,32 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    /** Top-right buttons: Colours and Source. */
+    /** Top-right buttons: Auto view, Colours and Source. */
     private fun buildTopBar() = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        addView(chip("Colours ▾") { showPaletteDialog() })
+        autoViewButton = chip("Auto view") { setAutoView(!renderer.autoCamera, save = true) }
+        addView(autoViewButton)
+        addView(chip("Colours ▾") { showPaletteDialog() }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { leftMargin = dp(10) })
         addView(sourceButton, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(10) })
+    }
+
+    /** Auto view: the camera tours the graph on its own (see [GridRenderer.autoCamera]). */
+    private fun setAutoView(on: Boolean, save: Boolean) {
+        renderer.autoCamera = on
+        if (save) prefs.edit().putBoolean(KEY_AUTO_VIEW, on).apply()
+        autoViewButton.background = if (on) {
+            GradientDrawable().apply {
+                cornerRadius = dp(20).toFloat()
+                setColor(Color.rgb(120, 200, 255))
+            }
+        } else {
+            chipBackground()
+        }
+        autoViewButton.setTextColor(if (on) Color.rgb(10, 20, 35) else Color.WHITE)
     }
 
     // --- Colours -----------------------------------------------------------------------
@@ -533,5 +556,6 @@ class MainActivity : Activity() {
         private const val KEY_SOURCE = "source"
         private const val KEY_PALETTE = "palette"
         private const val KEY_LEVEL_HIDDEN = "level_hidden"
+        private const val KEY_AUTO_VIEW = "auto_view"
     }
 }

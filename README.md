@@ -39,7 +39,8 @@ fresh consent, so they aren't).
 - **✕** collapses the panel to a small **Level ▴** chip; tap the chip to bring it back.
 - **Colours ▾** (top right): Spectrum, Fire, Ocean, Neon, Matrix, Sunset or Mono.
 
-Level, Auto (per source), the colour scheme and whether the panel is hidden are all remembered.
+Level, Auto (per source), the colour scheme, Auto view and whether the panel is hidden are all
+remembered.
 
 ## Controls
 
@@ -47,6 +48,9 @@ Level, Auto (per source), the colour scheme and whether the panel is hidden are 
 - **Pinch** to zoom
 - **Tap** to pause/resume
 - **Double-tap** to reset the view
+- **Auto view** (top right) to let the camera tour the graph by itself – it slowly orbits, tilts,
+  zooms and pans between random viewpoints; touching the graph takes over and the tour resumes
+  8 s after you let go
 - **Source ▾** to change the sound source, **Colours ▾** for the colour scheme
 - **Level** panel to raise/lower the bars or turn on **Auto**; **✕** hides it
 
