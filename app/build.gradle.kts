@@ -33,5 +33,7 @@ android {
 }
 
 dependencies {
+    // ARCore: tracks the phone's real position for Tilt view's push/pull zoom.
+    implementation("com.google.ar:core:1.56.0")
     testImplementation("junit:junit:4.13.2")
 }

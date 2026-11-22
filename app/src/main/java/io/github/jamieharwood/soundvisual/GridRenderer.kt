@@ -1,5 +1,6 @@
 package io.github.jamieharwood.soundvisual
 
+import android.opengl.GLES11Ext
 import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
@@ -35,6 +36,12 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     private val zFront = halfD
     private val xLeft = -halfW - 1f
     private val xRight = halfW + 1f
+
+    /** Called on the GL thread at the start of every frame (ARCore tracking update). */
+    @Volatile var onFrameStart: (() -> Unit)? = null
+
+    /** Called on the GL thread with a camera texture whenever the GL surface is (re)created. */
+    @Volatile var onCameraTextureCreated: ((Int) -> Unit)? = null
 
     /** Bar colour scheme; set from the UI thread, read on the GL thread every frame. */
     @Volatile var palette: Palette = Palette.SPECTRUM
@@ -134,6 +141,15 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         lineProgram = buildProgram(LINE_VS, LINE_FS)
         setupBars()
         setupLines()
+
+        // External texture ARCore streams camera frames into (needed for tracking, never drawn).
+        val tex = IntArray(1)
+        glGenTextures(1, tex, 0)
+        glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex[0])
+        glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+        onCameraTextureCreated?.invoke(tex[0])
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
@@ -143,6 +159,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        onFrameStart?.invoke()
         glClear(GL_COLOR_BUFFER_BIT or GL_DEPTH_BUFFER_BIT)
 
         // Camera orbiting the centre of the grid.

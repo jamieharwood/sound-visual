@@ -39,7 +39,19 @@ class MainActivity : Activity() {
     private lateinit var glView: GLSurfaceView
     private lateinit var overlay: LabelOverlayView
     private lateinit var sourceButton: TextView
-    private lateinit var autoViewButton: TextView
+    private lateinit var viewButton: TextView
+    private lateinit var tilt: TiltController
+    private lateinit var ar: ArTracker
+    private var isActive = false   // between onResume and onPause
+    private var arUnavailableShown = false
+
+    /** How the camera is driven. */
+    private enum class ViewMode(val button: String, val menu: String) {
+        TOUCH("View ▾", "Touch – drag to rotate, pinch to zoom"),
+        AUTO("Auto view ▾", "Auto view – tour the graph by itself"),
+        TILT("Tilt view ▾", "Tilt view – move the phone to look around"),
+    }
+    private var viewMode = ViewMode.TOUCH
     private lateinit var levelControl: LinearLayout
     private lateinit var levelSlider: SeekBar
     private lateinit var levelText: TextView
@@ -79,11 +91,21 @@ class MainActivity : Activity() {
         if (prefs.getString(KEY_SOURCE, null) == "output") source = CaptureSource.PhoneOutput
         levelControl = buildLevelControl()
         val topBar = buildTopBar()
-        setAutoView(prefs.getBoolean(KEY_AUTO_VIEW, false), save = false)
+        tilt = TiltController(this, renderer)
+        ar = ArTracker(this) { forward -> tilt.setPushPull(forward) }
+        renderer.onCameraTextureCreated = { id -> ar.onGlTextureCreated(id) }
+        renderer.onFrameStart = { ar.onGlFrame() }
+        setViewMode(savedViewMode(), save = false)
 
         val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
-                renderer.distance = (renderer.distance / d.scaleFactor).coerceIn(35f, 260f)
+                if (viewMode == ViewMode.TILT) {
+                    // Tilt view owns the distance (push/pull zoom); pinch moves its baseline.
+                    tilt.baseDistance = (tilt.baseDistance / d.scaleFactor)
+                        .coerceIn(TiltController.MIN_DISTANCE, TiltController.MAX_DISTANCE)
+                } else {
+                    renderer.distance = (renderer.distance / d.scaleFactor).coerceIn(35f, 260f)
+                }
                 return true
             }
         })
@@ -92,7 +114,13 @@ class MainActivity : Activity() {
                 analyzer.paused = !analyzer.paused; return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                renderer.resetCamera(); return true
+                renderer.resetCamera()
+                if (viewMode == ViewMode.TILT) {
+                    // Current pose and position become the default view.
+                    tilt.recenter()
+                    ar.recenter()
+                }
+                return true
             }
         })
         glView.setOnTouchListener { _, e ->
@@ -105,8 +133,15 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_POINTER_UP -> { lastX = e.x; lastY = e.y }
                 MotionEvent.ACTION_MOVE -> if (e.pointerCount == 1 && !scale.isInProgress) {
                     val k = 180f / glView.width.coerceAtLeast(1)
-                    renderer.yawDeg -= (e.x - lastX) * k
-                    renderer.pitchDeg = (renderer.pitchDeg + (e.y - lastY) * k).coerceIn(3f, 88f)
+                    if (viewMode == ViewMode.TILT) {
+                        // The sensor owns the camera; dragging shifts the centre it steers around.
+                        tilt.baseYaw -= (e.x - lastX) * k
+                        tilt.basePitch = (tilt.basePitch + (e.y - lastY) * k)
+                            .coerceIn(TiltController.MIN_PITCH, TiltController.MAX_PITCH)
+                    } else {
+                        renderer.yawDeg -= (e.x - lastX) * k
+                        renderer.pitchDeg = (renderer.pitchDeg + (e.y - lastY) * k).coerceIn(3f, 88f)
+                    }
                     lastX = e.x; lastY = e.y
                 }
             }
@@ -147,8 +182,11 @@ class MainActivity : Activity() {
         levelText.removeCallbacks(levelTicker)
         levelText.post(levelTicker)
         glView.onResume()
+        isActive = true
+        if (viewMode == ViewMode.TILT) tilt.start()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startAudio()
+            if (viewMode == ViewMode.TILT) startAr()
         } else {
             overlay.message = "Microphone permission needed"
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
@@ -157,12 +195,15 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         levelText.removeCallbacks(levelTicker)
+        isActive = false
+        tilt.stop()
         // Keep capturing other apps' audio while we're in the background (the foreground
         // service keeps us alive). If we stopped, Android would remove the capture route,
         // and a player started meanwhile (e.g. pressing play in Spotify) would bypass it
         // for as long as that stream lives.
         if (source !is CaptureSource.Playback) analyzer.stop()
         glView.onPause()
+        ar.pause() // after the GL thread has stopped calling into ARCore
         super.onPause()
     }
 
@@ -170,14 +211,24 @@ class MainActivity : Activity() {
         CaptureService.onProjection = null
         analyzer.stop()
         releaseProjection()
+        ar.close()
         super.onDestroy()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_CAMERA) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                if (viewMode == ViewMode.TILT && isActive) startAr()
+            } else {
+                toast("Without the camera, Tilt view can turn but not zoom")
+            }
+            return
+        }
         if (requestCode != REQ_AUDIO) return
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             startAudio()
+            if (viewMode == ViewMode.TILT) startAr()
         } else {
             overlay.message = "Microphone permission denied – enable it in Settings"
         }
@@ -219,8 +270,8 @@ class MainActivity : Activity() {
     /** Top-right buttons: Auto view, Colours and Source. */
     private fun buildTopBar() = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        autoViewButton = chip("Auto view") { setAutoView(!renderer.autoCamera, save = true) }
-        addView(autoViewButton)
+        viewButton = chip("View ▾") { showViewDialog() }
+        addView(viewButton)
         addView(chip("Colours ▾") { showPaletteDialog() }, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
         ).apply { leftMargin = dp(10) })
@@ -229,11 +280,63 @@ class MainActivity : Activity() {
         ).apply { leftMargin = dp(10) })
     }
 
-    /** Auto view: the camera tours the graph on its own (see [GridRenderer.autoCamera]). */
-    private fun setAutoView(on: Boolean, save: Boolean) {
-        renderer.autoCamera = on
-        if (save) prefs.edit().putBoolean(KEY_AUTO_VIEW, on).apply()
-        autoViewButton.background = if (on) {
+    // --- View (camera) mode -------------------------------------------------------------
+
+    private fun showViewDialog() {
+        val modes = ViewMode.entries
+        AlertDialog.Builder(this)
+            .setTitle("Camera")
+            .setItems(modes.map { if (it == viewMode) "${it.menu}  ✓" else it.menu }.toTypedArray()) { _, which ->
+                val mode = modes[which]
+                if (mode == ViewMode.TILT && !tilt.available) {
+                    toast("This device has no rotation sensor for Tilt view")
+                } else {
+                    setViewMode(mode, save = true)
+                }
+            }
+            .show()
+    }
+
+    /**
+     * Start ARCore position tracking for Tilt view's push/pull zoom: asks for the camera
+     * the first time, and may offer to install Google Play Services for AR.
+     */
+    private fun startAr() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+            return
+        }
+        when (ar.resume()) {
+            ArTracker.Status.RUNNING, ArTracker.Status.INSTALL_REQUESTED -> Unit
+            ArTracker.Status.UNSUPPORTED, ArTracker.Status.FAILED -> if (!arUnavailableShown) {
+                arUnavailableShown = true
+                toast("AR tracking isn't available, so Tilt view can turn but not zoom")
+            }
+        }
+    }
+
+    private fun savedViewMode(): ViewMode {
+        val name = prefs.getString(KEY_VIEW_MODE, null)
+            ?: if (prefs.getBoolean(KEY_AUTO_VIEW_LEGACY, false)) ViewMode.AUTO.name else ViewMode.TOUCH.name
+        val mode = ViewMode.entries.firstOrNull { it.name == name } ?: ViewMode.TOUCH
+        return if (mode == ViewMode.TILT && !tilt.available) ViewMode.TOUCH else mode
+    }
+
+    /** Touch (default), Auto view (camera tour) or Tilt view (phone orientation). */
+    private fun setViewMode(mode: ViewMode, save: Boolean) {
+        viewMode = mode
+        renderer.autoCamera = mode == ViewMode.AUTO
+        if (mode == ViewMode.TILT) {
+            tilt.start()
+            if (isActive) startAr()
+        } else {
+            tilt.stop()
+            glView.queueEvent { ar.pause() } // on the GL thread, so no frame update races it
+        }
+        if (save) prefs.edit().putString(KEY_VIEW_MODE, mode.name).apply()
+        val active = mode != ViewMode.TOUCH
+        viewButton.text = mode.button
+        viewButton.background = if (active) {
             GradientDrawable().apply {
                 cornerRadius = dp(20).toFloat()
                 setColor(Color.rgb(120, 200, 255))
@@ -241,7 +344,7 @@ class MainActivity : Activity() {
         } else {
             chipBackground()
         }
-        autoViewButton.setTextColor(if (on) Color.rgb(10, 20, 35) else Color.WHITE)
+        viewButton.setTextColor(if (active) Color.rgb(10, 20, 35) else Color.WHITE)
     }
 
     // --- Colours -----------------------------------------------------------------------
@@ -553,9 +656,12 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_AUDIO = 1
         private const val REQ_CAPTURE = 2
+        private const val REQ_CAMERA = 3
         private const val KEY_SOURCE = "source"
         private const val KEY_PALETTE = "palette"
         private const val KEY_LEVEL_HIDDEN = "level_hidden"
-        private const val KEY_AUTO_VIEW = "auto_view"
+        private const val KEY_VIEW_MODE = "view_mode"
+        /** Older builds stored only an on/off Auto view flag. */
+        private const val KEY_AUTO_VIEW_LEGACY = "auto_view"
     }
 }

@@ -39,8 +39,8 @@ fresh consent, so they aren't).
 - **✕** collapses the panel to a small **Level ▴** chip; tap the chip to bring it back.
 - **Colours ▾** (top right): Spectrum, Fire, Ocean, Neon, Matrix, Sunset or Mono.
 
-Level, Auto (per source), the colour scheme, Auto view and whether the panel is hidden are all
-remembered.
+Level, Auto (per source), the colour scheme, the View mode and whether the panel is hidden are
+all remembered.
 
 ## Controls
 
@@ -48,9 +48,21 @@ remembered.
 - **Pinch** to zoom
 - **Tap** to pause/resume
 - **Double-tap** to reset the view
-- **Auto view** (top right) to let the camera tour the graph by itself – it slowly orbits, tilts,
-  zooms and pans between random viewpoints; touching the graph takes over and the tour resumes
-  8 s after you let go
+- **View ▾** (top right) chooses how the camera moves:
+  - **Touch** – drag and pinch only (default)
+  - **Auto view** – the camera tours the graph by itself, slowly orbiting, tilting, zooming and
+    panning between random viewpoints; touching takes over and the tour resumes 8 s later
+  - **Tilt view** – move the phone to look around, as if through a window: turn it left/right to
+    swing around the graph, tip it back (as if looking down at a table) to rise above it, and
+    move the phone away from you to zoom in or pull it back to zoom out (2× per 20 cm). The
+    pose you're holding when you switch it on is the centre; drag to adjust, pinch to change the
+    base zoom, double-tap to re-centre on your current pose.
+    - Turning uses the game rotation vector sensor (200 Hz).
+    - Push/pull zoom tracks the phone's real position with **ARCore** (rear camera + motion
+      sensors, metric and drift-free). It asks for camera permission the first time and needs
+      Google Play Services for AR; without either, Tilt view still turns but doesn't zoom.
+      Camera frames are only used for tracking – never shown, saved or sent anywhere – and the
+      camera only runs while Tilt view is open. The rear camera needs to see the room.
 - **Source ▾** to change the sound source, **Colours ▾** for the colour scheme
 - **Level** panel to raise/lower the bars or turn on **Auto**; **✕** hides it
 
