@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.os.Build
 import android.view.View
+import android.view.WindowInsets
 
 /** Draws axis labels (projected by the renderer) and a live readout over the GL view. */
 class LabelOverlayView(
@@ -39,6 +41,27 @@ class LabelOverlayView(
     }
     private val positions = FloatArray(renderer.labels.size * 3)
 
+    // System bars / taskbar / cutout space to keep the HUD text clear of.
+    private var insetLeft = 0
+    private var insetTop = 0
+    private var insetBottom = 0
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            insetLeft = i.left; insetTop = i.top; insetBottom = i.bottom
+        } else {
+            @Suppress("DEPRECATION")
+            insetLeft = insets.systemWindowInsetLeft
+            @Suppress("DEPRECATION")
+            insetTop = insets.systemWindowInsetTop
+            @Suppress("DEPRECATION")
+            insetBottom = insets.systemWindowInsetBottom
+        }
+        invalidate()
+        return insets
+    }
+
     override fun onDraw(canvas: Canvas) {
         synchronized(renderer.labelLock) {
             System.arraycopy(renderer.labelScreen, 0, positions, 0, positions.size)
@@ -50,24 +73,25 @@ class LabelOverlayView(
         }
 
         val pad = 16f * density
-        var y = pad + hudPaint.textSize
+        val left = pad + insetLeft
+        var y = pad + insetTop + hudPaint.textSize
         val msg = message
         if (msg != null) {
-            canvas.drawText(msg, pad, y, hudPaint)
+            canvas.drawText(msg, left, y, hudPaint)
         } else {
             val peak = analyzer.peakHz
             val peakText = if (peak >= 1000) "%.2f kHz".format(peak / 1000) else "%.0f Hz".format(peak)
-            canvas.drawText("Peak  $peakText", pad, y, hudPaint)
+            canvas.drawText("Peak  $peakText", left, y, hudPaint)
             y += hudPaint.textSize * 1.3f
-            canvas.drawText("Level  %.1f dBFS".format(analyzer.rmsDb), pad, y, hudPaint)
+            canvas.drawText("Level  %.1f dBFS".format(analyzer.rmsDb), left, y, hudPaint)
             if (analyzer.paused) {
                 y += hudPaint.textSize * 1.3f
-                canvas.drawText("PAUSED", pad, y, hudPaint)
+                canvas.drawText("PAUSED", left, y, hudPaint)
             }
         }
         canvas.drawText(
             "Drag to rotate · pinch to zoom · tap to pause · double-tap to reset view",
-            pad, height - pad, hintPaint,
+            left, height - pad - insetBottom, hintPaint,
         )
         postInvalidateOnAnimation()
     }
