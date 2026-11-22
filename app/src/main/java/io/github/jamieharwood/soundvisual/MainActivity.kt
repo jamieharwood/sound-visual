@@ -22,6 +22,7 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.Surface
 import android.view.WindowManager
 import android.view.View
 import android.view.ViewGroup
@@ -67,6 +68,7 @@ class MainActivity : Activity() {
 
     private var lastX = 0f
     private var lastY = 0f
+    private var dragPointerId = MotionEvent.INVALID_POINTER_ID
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,10 +93,11 @@ class MainActivity : Activity() {
         if (prefs.getString(KEY_SOURCE, null) == "output") source = CaptureSource.PhoneOutput
         levelControl = buildLevelControl()
         val topBar = buildTopBar()
-        tilt = TiltController(this, renderer)
+        tilt = TiltController(this, renderer) { currentDisplayRotation() }
         ar = ArTracker(this) { forward -> tilt.setPushPull(forward) }
         renderer.onCameraTextureCreated = { id -> ar.onGlTextureCreated(id) }
         renderer.onFrameStart = { ar.onGlFrame() }
+        overlay.zoomStatus = { if (viewMode == ViewMode.TILT) ar.statusText ?: "off (no camera)" else null }
         setViewMode(savedViewMode(), save = false)
 
         val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -104,7 +107,8 @@ class MainActivity : Activity() {
                     tilt.baseDistance = (tilt.baseDistance / d.scaleFactor)
                         .coerceIn(TiltController.MIN_DISTANCE, TiltController.MAX_DISTANCE)
                 } else {
-                    renderer.distance = (renderer.distance / d.scaleFactor).coerceIn(35f, 260f)
+                    renderer.distance = (renderer.distance / d.scaleFactor)
+                        .coerceIn(TiltController.MIN_DISTANCE, TiltController.MAX_DISTANCE)
                 }
                 return true
             }
@@ -129,20 +133,40 @@ class MainActivity : Activity() {
             scale.onTouchEvent(e)
             gestures.onTouchEvent(e)
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { lastX = e.x; lastY = e.y }
-                MotionEvent.ACTION_POINTER_UP -> { lastX = e.x; lastY = e.y }
+                MotionEvent.ACTION_DOWN -> {
+                    dragPointerId = e.getPointerId(0)
+                    lastX = e.x; lastY = e.y
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    // A finger lifted (usually the end of a pinch): carry on from a finger that's
+                    // still down. Using the lifted finger's position made the next move look like
+                    // a finger-spread-wide drag and spun the view up to ~90°.
+                    val keep = if (e.actionIndex == 0) 1 else 0
+                    dragPointerId = e.getPointerId(keep)
+                    lastX = e.getX(keep); lastY = e.getY(keep)
+                }
                 MotionEvent.ACTION_MOVE -> if (e.pointerCount == 1 && !scale.isInProgress) {
+                    val i = e.findPointerIndex(dragPointerId)
+                    if (i < 0) {
+                        // Lost track of the finger: restart from wherever it is now, without moving.
+                        dragPointerId = e.getPointerId(0)
+                        lastX = e.getX(0); lastY = e.getY(0)
+                        return@setOnTouchListener true
+                    }
+                    val x = e.getX(i)
+                    val y = e.getY(i)
                     val k = 180f / glView.width.coerceAtLeast(1)
                     if (viewMode == ViewMode.TILT) {
                         // The sensor owns the camera; dragging shifts the centre it steers around.
-                        tilt.baseYaw -= (e.x - lastX) * k
-                        tilt.basePitch = (tilt.basePitch + (e.y - lastY) * k)
+                        tilt.baseYaw -= (x - lastX) * k
+                        tilt.basePitch = (tilt.basePitch + (y - lastY) * k)
                             .coerceIn(TiltController.MIN_PITCH, TiltController.MAX_PITCH)
                     } else {
-                        renderer.yawDeg -= (e.x - lastX) * k
-                        renderer.pitchDeg = (renderer.pitchDeg + (e.y - lastY) * k).coerceIn(3f, 88f)
+                        renderer.yawDeg -= (x - lastX) * k
+                        // Negative pitch looks up from below, at the right channel.
+                        renderer.pitchDeg = (renderer.pitchDeg + (y - lastY) * k).coerceIn(-85f, 85f)
                     }
-                    lastX = e.x; lastY = e.y
+                    lastX = x; lastY = y
                 }
             }
             true
@@ -314,6 +338,11 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    @Suppress("DEPRECATION")
+    private fun currentDisplayRotation(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: Surface.ROTATION_0
+        else windowManager.defaultDisplay.rotation
 
     private fun savedViewMode(): ViewMode {
         val name = prefs.getString(KEY_VIEW_MODE, null)

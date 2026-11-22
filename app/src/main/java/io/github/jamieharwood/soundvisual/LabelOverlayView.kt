@@ -24,6 +24,9 @@ class LabelOverlayView(
     var sourceLabel: String = CaptureSource.Microphone.label
         set(value) { field = value; invalidate() }
 
+    /** Tilt view's push/pull zoom status (null hides the line). */
+    var zoomStatus: () -> String? = { null }
+
     /** Hint shown after a few seconds of digital silence; null disables it. */
     var silenceHint: String? = null
 
@@ -101,6 +104,15 @@ class LabelOverlayView(
             canvas.drawText("Peak  $peakText", left, y, hudPaint)
             y += hudPaint.textSize * 1.3f
             canvas.drawText("Level  %.1f dBFS".format(analyzer.rmsDb), left, y, hudPaint)
+            y += hudPaint.textSize * 1.3f
+            canvas.drawText(
+                if (analyzer.stereo) "Channels  Left ▲  Right ▼" else "Channels  Mono (both sides alike)",
+                left, y, hudPaint,
+            )
+            zoomStatus()?.let {
+                y += hudPaint.textSize * 1.3f
+                canvas.drawText("Zoom  $it", left, y, hudPaint)
+            }
             if (analyzer.paused) {
                 y += hudPaint.textSize * 1.3f
                 canvas.drawText("PAUSED", left, y, hudPaint)

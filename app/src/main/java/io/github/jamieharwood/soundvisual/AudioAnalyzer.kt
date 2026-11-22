@@ -18,9 +18,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Records from the microphone on a background thread and keeps a rolling
- * history of band levels: [historyRows] rows x [bandCount] columns.
- * Row 0 of a [snapshot] is always the newest.
+ * Captures audio on a background thread and keeps a rolling history of band levels for each
+ * stereo channel: [historyRows] rows x [bandCount] columns, left and right. Row 0 of a
+ * [snapshot] is always the newest. Mono sources fill both channels with the same data.
  */
 class AudioAnalyzer(
     private val context: Context,
@@ -31,7 +31,12 @@ class AudioAnalyzer(
     val fftSize = 2048
     val hopSize = 1024
 
+    /** Left channel analysis (also used for the axis layout). */
     val bands = SpectrumBands(sampleRate, fftSize, bandCount)
+    private val bandsRight = SpectrumBands(sampleRate, fftSize, bandCount)
+
+    /** True when the current source really has separate left/right channels. */
+    @Volatile var stereo = false; private set
 
     /** New history rows per second for the current source. */
     @Volatile private var rowsPerSecond = sampleRate.toFloat() / hopSize
@@ -60,9 +65,11 @@ class AudioAnalyzer(
     val historySeconds: Float get() = historyRows / rowsPerSecond
 
     private val lock = Any()
-    private val ring = FloatArray(bandCount * historyRows)
-    private var head = 0 // index of newest row in ring
-    private val smoothed = FloatArray(bandCount)
+    private val ringLeft = FloatArray(bandCount * historyRows)
+    private val ringRight = FloatArray(bandCount * historyRows)
+    private var head = 0 // index of newest row in the rings
+    private val smoothedLeft = FloatArray(bandCount)
+    private val smoothedRight = FloatArray(bandCount)
 
     @Volatile var peakHz = 0f; private set
     @Volatile var rmsDb = bands.floorDb; private set
@@ -87,29 +94,34 @@ class AudioAnalyzer(
     fun start(source: CaptureSource): Boolean {
         if (running) return true
         if (source is CaptureSource.PhoneOutput) return startVisualizer()
-        val minBuf = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minBuf <= 0) return false
-        val bufferBytes = maxOf(minBuf, hopSize * 2 * 4)
-        val record = try {
-            when (source) {
-                is CaptureSource.Microphone -> AudioRecord(
-                    pickMicSource(),
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferBytes,
-                )
-                is CaptureSource.Playback -> buildPlaybackRecord(source, bufferBytes) ?: return false
-                CaptureSource.PhoneOutput -> return false // handled by startVisualizer()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "AudioRecord init failed for ${source.label}", e); return false
+        // Try stereo first (two mics, or a stereo app mix); fall back to mono.
+        var record: AudioRecord? = null
+        var channels = 0
+        for (mask in intArrayOf(AudioFormat.CHANNEL_IN_STEREO, AudioFormat.CHANNEL_IN_MONO)) {
+            val ch = if (mask == AudioFormat.CHANNEL_IN_STEREO) 2 else 1
+            val minBuf = AudioRecord.getMinBufferSize(sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT)
+            if (minBuf <= 0) continue
+            val bufferBytes = maxOf(minBuf, hopSize * 2 * ch * 4)
+            val r = try {
+                when (source) {
+                    is CaptureSource.Microphone -> AudioRecord(
+                        pickMicSource(ch == 2), sampleRate, mask, AudioFormat.ENCODING_PCM_16BIT, bufferBytes,
+                    )
+                    is CaptureSource.Playback -> buildPlaybackRecord(source, mask, bufferBytes)
+                    CaptureSource.PhoneOutput -> null // handled by startVisualizer()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "AudioRecord init failed for ${source.label} ($ch ch)", e); null
+            } ?: continue
+            if (r.state == AudioRecord.STATE_INITIALIZED) { record = r; channels = ch; break }
+            r.release()
         }
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
+        if (record == null) {
             Log.e(TAG, "AudioRecord not initialized for ${source.label}")
-            record.release(); return false
+            return false
         }
-        Log.i(TAG, "capture started: ${source.label}" +
+        stereo = channels == 2
+        Log.i(TAG, "capture started: ${source.label} (${if (stereo) "stereo" else "mono"})" +
             (if (source is CaptureSource.Playback) " (uid=${source.uid ?: "all"})" else ""))
 
         lastSoundAtMs = SystemClock.elapsedRealtime()
@@ -118,7 +130,9 @@ class AudioAnalyzer(
         ceilDb = bands.ceilDb
         refDb = -200f
         running = true
-        thread = Thread({ loop(record, source) }, "audio-analyzer").apply {
+        val rec = record
+        val ch = channels
+        thread = Thread({ loop(rec, ch, source) }, "audio-analyzer").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
@@ -126,7 +140,7 @@ class AudioAnalyzer(
     }
 
     @SuppressLint("MissingPermission")
-    private fun buildPlaybackRecord(source: CaptureSource.Playback, bufferBytes: Int): AudioRecord? {
+    private fun buildPlaybackRecord(source: CaptureSource.Playback, channelMask: Int, bufferBytes: Int): AudioRecord? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
         val config = AudioPlaybackCaptureConfiguration.Builder(source.projection).apply {
             if (source.uid != null) {
@@ -142,7 +156,7 @@ class AudioAnalyzer(
                 AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setSampleRate(sampleRate)
-                    .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                    .setChannelMask(channelMask)
                     .build()
             )
             .setBufferSizeInBytes(bufferBytes)
@@ -186,7 +200,7 @@ class AudioAnalyzer(
                         if (!running) return
                         val m = minOf(n, wave.size)
                         for (i in 0 until m) samples[i] = ((wave[i].toInt() and 0xFF) - 128) / 128f
-                        processBlock(vizBands, samples, CaptureSource.PhoneOutput)
+                        processBlock(vizBands, samples, null, null, CaptureSource.PhoneOutput)
                     }
                     override fun onFftDataCapture(viz: Visualizer, fft: ByteArray, rate: Int) = Unit
                 }, Visualizer.getMaxCaptureRate(), true, false)
@@ -205,6 +219,7 @@ class AudioAnalyzer(
         visualizer = v
         visualizerThread = ht
         rowsPerSecond = Visualizer.getMaxCaptureRate() / 1000f
+        stereo = false // the Visualizer only provides a mono mix
         // Visualizer data is gain-normalised by Android, so music sits near full scale:
         // show a narrower 40 dB window at the top instead of the mic's 80 dB.
         floorDb = VISUALIZER_DISPLAY_FLOOR_DB
@@ -231,16 +246,27 @@ class AudioAnalyzer(
         Log.i(TAG, "capture ended: Phone output")
     }
 
-    /** Analyse one block and push a history row. Called from the capture thread. */
-    private fun processBlock(b: SpectrumBands, samples: FloatArray, source: CaptureSource) {
+    /**
+     * Analyse one block per channel and push a history row. [right]/[rightSamples] null means
+     * a mono source: the left result fills both channels. Called from the capture thread.
+     */
+    private fun processBlock(
+        left: SpectrumBands,
+        leftSamples: FloatArray,
+        right: SpectrumBands?,
+        rightSamples: FloatArray?,
+        source: CaptureSource,
+    ) {
         if (paused) return
-        b.process(samples)
+        left.process(leftSamples)
+        val r = if (right != null && rightSamples != null) right.also { it.process(rightSamples) } else left
         val floor = floorDb
         val span = ceilDb - floor
-        // Track the loudest band; never let silence drag the reference below mid-range,
-        // or auto level would amplify the noise floor up to the top.
-        var loudest = b.floorDb
-        for (db in b.bandDb) if (db > loudest) loudest = db
+        // Track the loudest band in either channel; never let silence drag the reference below
+        // mid-range, or auto level would amplify the noise floor up to the top.
+        var loudest = left.floorDb
+        for (db in left.bandDb) if (db > loudest) loudest = db
+        for (db in r.bandDb) if (db > loudest) loudest = db
         refDb = maxOf(loudest, refDb - AUTO_RELEASE_DB_PER_SEC / rowsPerSecond, floor + span * 0.5f)
         val gain = if (autoLevel) {
             (ceilDb - AUTO_HEADROOM_DB - refDb).coerceIn(MIN_GAIN_DB, MAX_GAIN_DB)
@@ -248,67 +274,97 @@ class AudioAnalyzer(
             gainDb
         }
         effectiveGainDb = gain
-        peakHz = b.peakHz
-        rmsDb = b.rmsDb
+        val louder = if (r.rmsDb > left.rmsDb) r else left
+        peakHz = louder.peakHz
+        rmsDb = louder.rmsDb
         val now = SystemClock.elapsedRealtime()
-        if (rmsDb > b.floorDb + 3f) lastSoundAtMs = now
+        if (rmsDb > left.floorDb + 3f) lastSoundAtMs = now
         if (now - lastLogMs > 5000) {
             lastLogMs = now
-            Log.d(TAG, "${source.label}: rms=%.1f dBFS peak=%.0f Hz".format(rmsDb, peakHz))
+            Log.d(TAG, "${source.label}: L=%.1f R=%.1f dBFS peak=%.0f Hz".format(left.rmsDb, r.rmsDb, peakHz))
         }
         synchronized(lock) {
             head = (head + 1) % historyRows
             val base = head * bandCount
             for (i in 0 until bandCount) {
-                val level = ((b.bandDb[i] + gain - floor) / span).coerceIn(0f, 1f)
-                // Instant attack, gentle release so bars don't flicker.
-                val s = maxOf(level, smoothed[i] - RELEASE_PER_HOP)
-                smoothed[i] = s
-                ring[base + i] = s
+                ringLeft[base + i] = smooth(smoothedLeft, i, (left.bandDb[i] + gain - floor) / span)
+                ringRight[base + i] = smooth(smoothedRight, i, (r.bandDb[i] + gain - floor) / span)
             }
         }
+    }
+
+    /** Instant attack, gentle release so bars don't flicker. */
+    private fun smooth(state: FloatArray, i: Int, raw: Float): Float {
+        val s = maxOf(raw.coerceIn(0f, 1f), state[i] - RELEASE_PER_HOP)
+        state[i] = s
+        return s
     }
 
     @Volatile private var lastLogMs = 0L
 
-    /** Copy the history into [out] (size bandCount * historyRows), newest row first. */
+    /**
+     * Copy the history into [out] (size 2 * bandCount * historyRows), newest row first:
+     * the left channel's rows, then the right channel's.
+     */
     fun snapshot(out: FloatArray) {
+        val perSide = bandCount * historyRows
         synchronized(lock) {
             for (r in 0 until historyRows) {
                 val src = ((head - r + historyRows) % historyRows) * bandCount
-                System.arraycopy(ring, src, out, r * bandCount, bandCount)
+                System.arraycopy(ringLeft, src, out, r * bandCount, bandCount)
+                System.arraycopy(ringRight, src, out, perSide + r * bandCount, bandCount)
             }
         }
     }
 
-    private fun pickMicSource(): Int {
+    private fun pickMicSource(stereo: Boolean): Int {
+        // CAMCORDER is the source phones use for stereo video, so it's the one that actually
+        // combines two microphones; the others usually give one mic copied to both channels.
+        if (stereo) return MediaRecorder.AudioSource.CAMCORDER
         // UNPROCESSED / VOICE_RECOGNITION avoid AGC, which would flatten the volume axis.
         val am = context.getSystemService(AudioManager::class.java)
         val unprocessed = am?.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
         return if (unprocessed) MediaRecorder.AudioSource.UNPROCESSED else MediaRecorder.AudioSource.VOICE_RECOGNITION
     }
 
-    private fun loop(record: AudioRecord, source: CaptureSource) {
-        val pcm = ShortArray(hopSize)
-        val window = FloatArray(fftSize)
+    private fun loop(record: AudioRecord, channels: Int, source: CaptureSource) {
+        val samplesPerHop = hopSize * channels
+        val pcm = ShortArray(samplesPerHop)
+        val windowLeft = FloatArray(fftSize)
+        val windowRight = FloatArray(fftSize)
         var lost = false
+        var identicalBlocks = 0
         try {
             record.startRecording()
             Log.i(TAG, "recording state=${record.recordingState} routed=${record.routedDevice?.type}")
             while (running) {
                 var read = 0
-                while (read < hopSize && running) {
-                    val n = record.read(pcm, read, hopSize - read)
+                while (read < samplesPerHop && running) {
+                    val n = record.read(pcm, read, samplesPerHop - read)
                     if (n < 0) { Log.e(TAG, "read error $n on ${source.label}"); lost = true; running = false; break }
                     read += n
                 }
                 if (!running) break
 
-                // Slide the analysis window by one hop.
-                System.arraycopy(window, hopSize, window, 0, fftSize - hopSize)
-                for (i in 0 until hopSize) window[fftSize - hopSize + i] = pcm[i] / 32768f
-
-                processBlock(bands, window, source)
+                // Slide the analysis windows by one hop; stereo PCM is interleaved L, R, L, R…
+                val tail = fftSize - hopSize
+                System.arraycopy(windowLeft, hopSize, windowLeft, 0, tail)
+                if (channels == 2) {
+                    System.arraycopy(windowRight, hopSize, windowRight, 0, tail)
+                    var differs = false
+                    for (i in 0 until hopSize) {
+                        windowLeft[tail + i] = pcm[2 * i] / 32768f
+                        windowRight[tail + i] = pcm[2 * i + 1] / 32768f
+                        if (pcm[2 * i] != pcm[2 * i + 1]) differs = true
+                    }
+                    // Some devices deliver "stereo" that is one mic copied twice: report mono.
+                    identicalBlocks = if (differs) 0 else identicalBlocks + 1
+                    stereo = identicalBlocks < IDENTICAL_BLOCKS_FOR_MONO
+                    processBlock(bands, windowLeft, bandsRight, windowRight, source)
+                } else {
+                    for (i in 0 until hopSize) windowLeft[tail + i] = pcm[i] / 32768f
+                    processBlock(bands, windowLeft, null, null, source)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "audio loop failed on ${source.label}", e)
@@ -325,6 +381,8 @@ class AudioAnalyzer(
     companion object {
         private const val TAG = "AudioAnalyzer"
         private const val RELEASE_PER_HOP = 0.06f
+        /** ~0.5 s of bit-identical left/right audio means the "stereo" is really mono. */
+        private const val IDENTICAL_BLOCKS_FOR_MONO = 20
         private const val VISUALIZER_FLOOR_DB = -80f
         private const val VISUALIZER_CEIL_DB = 0f
         private const val VISUALIZER_DISPLAY_FLOOR_DB = -40f

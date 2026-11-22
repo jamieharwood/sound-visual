@@ -5,6 +5,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.util.Log
+import android.view.Surface
 import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.exp
@@ -14,17 +16,24 @@ import kotlin.math.sqrt
 /**
  * Tilt view: steer the camera by moving the phone, like looking at the graph through a window.
  *
- * Turning uses the direction the back of the phone points (world frame, from the rotation-vector
- * sensor). That direction is well defined whether the phone is held upright or tipped back,
- * and doesn't depend on portrait/landscape. Relative to the pose when Tilt view starts:
+ * Turning (heading) comes from the screen's left–right edge, rotated a quarter turn in the
+ * horizontal plane. That edge stays level whether the phone is upright, flat (looking down as at
+ * a table) or tipped towards you, so the heading is stable at every tilt. (The direction the back
+ * points goes vertical when the phone lies flat, which made the heading swing by up to 90°.)
+ * Height comes from the direction the back points. Relative to the pose when Tilt view starts:
  *  - turning the phone left/right orbits the camera around the graph,
- *  - tipping it back to look down (as at a table) raises the camera; holding it upright
- *    gives a low, side-on view.
+ *  - tipping it back to look down (as at a table) raises the camera; tilting the top
+ *    towards you lowers it, down to looking up from below at the right channel.
  *
  * Zoom comes from [setPushPull], fed with the phone's real movement measured by [ArTracker]:
  * moving the phone away from you zooms in, pulling it back zooms out.
  */
-class TiltController(context: Context, private val renderer: GridRenderer) : SensorEventListener {
+class TiltController(
+    context: Context,
+    private val renderer: GridRenderer,
+    /** Current display rotation (Surface.ROTATION_*), so we know which way the screen faces. */
+    private val displayRotation: () -> Int,
+) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(SensorManager::class.java)
     // Game rotation vector ignores the magnetometer, so it doesn't drift near metal or speakers.
@@ -51,10 +60,12 @@ class TiltController(context: Context, private val renderer: GridRenderer) : Sen
     private var smoothYaw = 0f
     private var smoothElevation = 0f
     private var running = false
+    private var lastDisplayRotation = -1
 
     fun start() {
         if (running || sensor == null) return
         recenter()
+        lastDisplayRotation = displayRotation()
         // ~200 Hz keeps the smoothing delay under 10 ms.
         sensorManager.registerListener(this, sensor, FAST_PERIOD_US)
         running = true
@@ -96,15 +107,38 @@ class TiltController(context: Context, private val renderer: GridRenderer) : Sen
 
     override fun onSensorChanged(event: SensorEvent) {
         SensorManager.getRotationMatrixFromVector(rotation, event.values)
-        // Back of the phone = device -Z; in world coordinates that's minus the third column.
-        val x = -rotation[2]   // east
-        val y = -rotation[5]   // north
-        val z = -rotation[8]   // up
-        val horizontal = sqrt(x * x + y * y)
-        val elevation = Math.toDegrees(asin(z.coerceIn(-1f, 1f).toDouble())).toFloat()
-        // Lying almost flat, the heading is undefined; keep the last one until it's usable.
-        val haveHeading = horizontal > 0.15f
-        val azimuth = Math.toDegrees(atan2(x.toDouble(), y.toDouble())).toFloat()
+
+        // The screen flipped (e.g. turned the other way up): re-centre on the current view so
+        // the change of reference edge doesn't make it jump.
+        val displayRot = displayRotation()
+        if (displayRot != lastDisplayRotation) {
+            Log.i(TAG, "display rotation $lastDisplayRotation -> $displayRot (re-centring)")
+            lastDisplayRotation = displayRot
+            baseYaw = renderer.yawDeg
+            basePitch = renderer.pitchDeg
+            refAzimuth = Float.NaN
+        }
+
+        // Height: the back of the phone is device -Z; in world coordinates, minus column 3.
+        val backUp = -rotation[8]
+        val elevation = Math.toDegrees(asin(backUp.coerceIn(-1f, 1f).toDouble())).toFloat()
+
+        // Heading: the screen's right-hand edge in device axes depends on the display rotation.
+        val (dx, dy) = when (displayRot) {
+            Surface.ROTATION_90 -> 0f to 1f
+            Surface.ROTATION_180 -> -1f to 0f
+            Surface.ROTATION_270 -> 0f to -1f
+            else -> 1f to 0f
+        }
+        // World direction of that edge (east, north): R * (dx, dy, 0).
+        val rightEast = rotation[0] * dx + rotation[1] * dy
+        val rightNorth = rotation[3] * dx + rotation[4] * dy
+        // Facing direction = right edge turned 90° anticlockwise in the horizontal plane.
+        val faceEast = -rightNorth
+        val faceNorth = rightEast
+        // Only if the phone is rolled right over on its side is the edge near vertical.
+        val haveHeading = sqrt(faceEast * faceEast + faceNorth * faceNorth) > 0.2f
+        val azimuth = Math.toDegrees(atan2(faceEast.toDouble(), faceNorth.toDouble())).toFloat()
 
         if (refAzimuth.isNaN()) {
             if (!haveHeading) return
@@ -136,15 +170,18 @@ class TiltController(context: Context, private val renderer: GridRenderer) : Sen
     }
 
     companion object {
+        private const val TAG = "TiltView"
         /** ~200 Hz: the fastest allowed without an extra permission. */
         private const val FAST_PERIOD_US = 5_000
         /** Per sample at ~200 Hz: under 10 ms of smoothing delay. */
         private const val SMOOTHING = 0.5f
         /** ln(2) per 20 cm: moving the phone 20 cm doubles or halves the zoom. */
         private const val ZOOM_PER_METRE = 3.47f
-        const val MIN_PITCH = 3f
-        const val MAX_PITCH = 88f
-        const val MIN_DISTANCE = 35f
-        const val MAX_DISTANCE = 260f
+        /** Negative pitch looks up from below the centre plane, at the right channel. */
+        const val MIN_PITCH = -85f
+        const val MAX_PITCH = 85f
+        /** Closest zoom: keeps the camera outside the graph (which now extends above and below). */
+        const val MIN_DISTANCE = 60f
+        const val MAX_DISTANCE = 280f
     }
 }

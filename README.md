@@ -6,10 +6,17 @@ An Android app that listens through the microphone and draws the sound as a live
 | Axis | Meaning |
 |---|---|
 | **X** | Frequency – 64 log-spaced bands from 30 Hz to 16 kHz |
-| **Y** | Volume – bar height and colour (blue → red), in dBFS (-90 to -10) |
+| **Y** | Volume – bar height and colour, in dBFS: the **left channel rises above** the centre plane (+) and the **right channel hangs below** it (−) |
 | **Z** | Time – the newest spectrum is the front row; older rows scroll back (~1.5 s of history) |
 
-A readout in the corner shows the dominant (peak) frequency and the overall RMS level.
+A readout in the corner shows the dominant (peak) frequency, the overall RMS level, and whether
+the source is really stereo. Drag (or tilt the phone in Tilt view) below the centre plane to look
+up at the right channel.
+
+**Stereo by source:** the microphone records true stereo on phones with two mics (using the
+camcorder input, as stereo video does); app capture records the stereo mix; **Phone output is
+mono** (Android's Visualizer only provides a mono mix), so both halves mirror each other. If a
+device delivers "stereo" that's really one mic copied twice, the readout says Mono.
 
 ## Sound sources
 
@@ -62,7 +69,9 @@ all remembered.
       sensors, metric and drift-free). It asks for camera permission the first time and needs
       Google Play Services for AR; without either, Tilt view still turns but doesn't zoom.
       Camera frames are only used for tracking – never shown, saved or sent anywhere – and the
-      camera only runs while Tilt view is open. The rear camera needs to see the room.
+      camera only runs while Tilt view is open. The rear camera needs to see the room; the
+      readout's **Zoom** line says when tracking pauses (too dark, camera covered, moving too
+      fast). Zoom stops at a closest distance that keeps the camera outside the graph.
 - **Source ▾** to change the sound source, **Colours ▾** for the colour scheme
 - **Level** panel to raise/lower the bars or turn on **Auto**; **✕** hides it
 

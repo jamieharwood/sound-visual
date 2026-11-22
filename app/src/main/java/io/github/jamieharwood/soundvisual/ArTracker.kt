@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.UnavailableException
 
@@ -35,6 +36,18 @@ class ArTracker(
 
     private var prevPos: FloatArray? = null
     private var forward = 0f
+
+    /** Short status for the on-screen readout, e.g. "tracking" or "paused – too dark". */
+    @Volatile var statusText: String? = null; private set
+    private var lastLoggedStatus: String? = null
+
+    private fun setStatus(text: String?) {
+        statusText = text
+        if (text != lastLoggedStatus) {
+            lastLoggedStatus = text
+            Log.i(TAG, "zoom tracking: ${text ?: "off"}")
+        }
+    }
 
     /** True once ARCore is installed and supported here (checked lazily). */
     fun isSupported(): Boolean = try {
@@ -89,6 +102,7 @@ class ArTracker(
     /** Release the camera. Call after the GL view has been paused. */
     fun pause() {
         session?.pause()
+        setStatus(null)
     }
 
     fun close() {
@@ -115,8 +129,16 @@ class ArTracker(
             val camera = s.update().camera
             if (camera.trackingState != TrackingState.TRACKING) {
                 prevPos = null // resume cleanly without a jump when tracking comes back
+                setStatus("paused – " + when (camera.trackingFailureReason) {
+                    TrackingFailureReason.INSUFFICIENT_LIGHT -> "too dark"
+                    TrackingFailureReason.EXCESSIVE_MOTION -> "moving too fast"
+                    TrackingFailureReason.INSUFFICIENT_FEATURES -> "camera can't see detail (covered?)"
+                    TrackingFailureReason.CAMERA_UNAVAILABLE -> "camera in use elsewhere"
+                    else -> if (camera.trackingState == TrackingState.PAUSED) "starting…" else "lost"
+                })
                 return
             }
+            setStatus("tracking")
             val pose = camera.pose
             val pos = floatArrayOf(pose.tx(), pose.ty(), pose.tz())
             if (recenterRequested) {

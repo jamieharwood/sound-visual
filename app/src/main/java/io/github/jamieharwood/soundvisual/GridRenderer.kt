@@ -19,7 +19,8 @@ import kotlin.random.Random
 /**
  * Draws the spectrum history as a 3D matrix of bars:
  *   X = frequency band (log scale, low on the left)
- *   Y = volume (bar height + colour)
+ *   Y = volume (bar height + colour): left channel rises above the centre plane (+),
+ *       right channel hangs below it (−)
  *   Z = time (newest row at the front, older rows recede)
  */
 class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer {
@@ -88,10 +89,10 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
             tourFrom[0] = yawDeg; tourFrom[1] = pitchDeg; tourFrom[2] = distance
             tourFrom[3] = panX; tourFrom[4] = panZ
             tourTo[0] = Random.nextFloat() * 140f - 70f        // yaw: left ↔ right of the grid
-            tourTo[1] = 10f + Random.nextFloat() * 52f         // pitch: low sweep ↔ high overview
-            tourTo[2] = 55f + Random.nextFloat() * 85f         // distance: close-up ↔ wide
+            tourTo[1] = -40f + Random.nextFloat() * 100f       // pitch: from below ↔ high overview
+            tourTo[2] = 70f + Random.nextFloat() * 90f         // distance: close-up ↔ wide
             // Close views look at a random region; wide views stay near the centre.
-            val roam = ((140f - tourTo[2]) / 85f).coerceIn(0f, 1f)
+            val roam = ((160f - tourTo[2]) / 90f).coerceIn(0f, 1f)
             tourTo[3] = (Random.nextFloat() * 2f - 1f) * halfW * 0.6f * roam
             tourTo[4] = (Random.nextFloat() * 2f - 1f) * halfD * 0.5f * roam
             tourStartMs = now
@@ -113,7 +114,8 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     val labelScreen = FloatArray(labels.size * 3)
     val labelLock = Any()
 
-    private val levels = FloatArray(cols * rows)
+    /** Left channel's rows then right channel's (see [AudioAnalyzer.snapshot]). */
+    private val levels = FloatArray(2 * cols * rows)
     private lateinit var levelBuffer: FloatBuffer
 
     private var barProgram = 0
@@ -154,6 +156,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         width = w; height = h
+        Log.i(TAG, "surface ${w}x$h")
         glViewport(0, 0, w, h)
         Matrix.perspectiveM(proj, 0, 45f, w.toFloat() / h.coerceAtLeast(1), 1f, 600f)
     }
@@ -166,7 +169,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         updateTour()
         val yaw = Math.toRadians(yawDeg.toDouble())
         val pitch = Math.toRadians(pitchDeg.toDouble())
-        val cy = HEIGHT_SCALE * 0.25f
+        val cy = 0f // look at the centre plane between the two channels
         val tx = panX
         val tz = halfD * 0.2f + panZ
         val ex = tx + (distance * sin(yaw) * cos(pitch)).toFloat()
@@ -189,7 +192,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glUniform1f(glGetUniformLocation(barProgram, "uHeight"), HEIGHT_SCALE)
         glUniform3fv(glGetUniformLocation(barProgram, "uStops"), Palette.STOPS, palette.stops, 0)
         glBindVertexArray(barVao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, CUBE_VERTS, cols * rows)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, CUBE_VERTS, 2 * cols * rows)
 
         // Floor grid and axes.
         glUseProgram(lineProgram)
@@ -255,16 +258,21 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         val b = analyzer.bands
         for (db in DB_TICKS) {
             val fraction = b.dbToLevel(db.toFloat())
-            val label = Label("$db", xLeft - 2.5f, fraction * HEIGHT_SCALE, zFront, Label.Kind.TICK)
-            dbLabels += label to fraction
-            out += label
+            // Same dB value on both sides: up for the left channel, down for the right.
+            for (side in floatArrayOf(1f, -1f)) {
+                val label = Label("$db", xLeft - 2.5f, side * fraction * HEIGHT_SCALE, zFront, Label.Kind.TICK)
+                dbLabels += label to fraction
+                out += label
+            }
         }
+        out += Label("Left +", xLeft - 1f, HEIGHT_SCALE + 1.5f, zFront, Label.Kind.TITLE)
+        out += Label("Right −", xLeft - 1f, -HEIGHT_SCALE - 1.5f, zFront, Label.Kind.TITLE)
         out += Label("now", xRight + 3f, 0f, zFront, Label.Kind.TICK)
         out += Label(historyText(analyzer.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
             .also { historyLabel = it }
 
         out += Label("Frequency (Hz)", 0f, 0f, zFront + 10f, Label.Kind.TITLE)
-        out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
+        out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 4.5f, zFront, Label.Kind.TITLE)
         out += Label("Time", xRight + 4f, 0f, 0f, Label.Kind.TITLE)
         return out
     }
@@ -289,10 +297,12 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
             .5f, 0f, .5f, 1f, 0f, 0f, .5f, 0f, -.5f, 1f, 0f, 0f, .5f, 1f, -.5f, 1f, 0f, 0f,
             .5f, 0f, .5f, 1f, 0f, 0f, .5f, 1f, -.5f, 1f, 0f, 0f, .5f, 1f, .5f, 1f, 0f, 0f,
         )
-        val cells = FloatArray(cols * rows * 2)
-        for (r in 0 until rows) for (c in 0 until cols) {
-            val i = (r * cols + c) * 2
-            cells[i] = c.toFloat(); cells[i + 1] = r.toFloat()
+        // Per instance: band, row, side (+1 left channel above, −1 right channel below).
+        // Order matches levels: all left-channel cells, then all right-channel cells.
+        val cells = FloatArray(2 * cols * rows * 3)
+        for (side in 0..1) for (r in 0 until rows) for (c in 0 until cols) {
+            val i = ((side * rows + r) * cols + c) * 3
+            cells[i] = c.toFloat(); cells[i + 1] = r.toFloat(); cells[i + 2] = if (side == 0) 1f else -1f
         }
         levelBuffer = floatBuffer(levels.size)
 
@@ -312,7 +322,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glBindBuffer(GL_ARRAY_BUFFER, vbos[1])
         glBufferData(GL_ARRAY_BUFFER, cells.size * 4, floatBuffer(cells), GL_STATIC_DRAW)
         glEnableVertexAttribArray(2)
-        glVertexAttribPointer(2, 2, GL_FLOAT, false, 0, 0)
+        glVertexAttribPointer(2, 3, GL_FLOAT, false, 0, 0)
         glVertexAttribDivisor(2, 1)
 
         levelVbo = vbos[2]
@@ -342,11 +352,13 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
             line(x, 0f, front, x, 0f, front + 1.2f, 0.7f)
         }
         // Volume axis at the front-left corner with ticks and faint back-wall guides.
-        line(xLeft, 0f, front, xLeft, HEIGHT_SCALE, front, 0.7f)
+        line(xLeft, -HEIGHT_SCALE, front, xLeft, HEIGHT_SCALE, front, 0.7f)
         for (db in DB_TICKS) {
-            val y = analyzer.bands.dbToLevel(db.toFloat()) * HEIGHT_SCALE
-            line(xLeft - 0.8f, y, front, xLeft, y, front, 0.7f)
-            line(-halfW, y, back, halfW, y, back, 0.10f)
+            val h = analyzer.bands.dbToLevel(db.toFloat()) * HEIGHT_SCALE
+            for (y in floatArrayOf(h, -h)) {
+                line(xLeft - 0.8f, y, front, xLeft, y, front, 0.7f)
+                line(-halfW, y, back, halfW, y, back, 0.10f)
+            }
         }
         // Time axis at the right edge.
         line(xRight, 0f, front, xRight, 0f, back, 0.7f)
@@ -403,7 +415,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         const val HEIGHT_SCALE = 24f
         private const val DEFAULT_YAW = -28f
         private const val DEFAULT_PITCH = 26f
-        private const val DEFAULT_DISTANCE = 108f
+        private const val DEFAULT_DISTANCE = 125f
         private const val TOUR_MIN_SEGMENT_MS = 6_000L
         private const val TOUR_EXTRA_SEGMENT_MS = 5_000L
         private const val TOUR_RESUME_AFTER_MS = 8_000L
@@ -414,7 +426,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         private const val BAR_VS = """#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNormal;
-layout(location = 2) in vec2 aCell;   // x = band, y = row (0 = newest)
+layout(location = 2) in vec3 aCell;   // x = band, y = row (0 = newest), z = side (+1 L, −1 R)
 layout(location = 3) in float aLevel; // 0..1
 uniform mat4 uMvp;
 uniform vec2 uGrid;
@@ -432,10 +444,13 @@ void main() {
     float h = max(aLevel, 0.004) * uHeight;
     float x = aCell.x - uGrid.x * 0.5 + 0.5 + aPos.x * 0.78;
     float z = uGrid.y * 0.5 - 0.5 - aCell.y + aPos.z * 0.78;
-    gl_Position = uMvp * vec4(x, aPos.y * h, z, 1.0);
+    // Right-channel bars are mirrored below the centre plane.
+    gl_Position = uMvp * vec4(x, aPos.y * h * aCell.z, z, 1.0);
 
+    vec3 normal = vec3(aNormal.x, aNormal.y * aCell.z, aNormal.z);
     vec3 light = normalize(vec3(-0.4, 1.0, 0.6));
-    float shade = 0.45 + 0.55 * max(dot(aNormal, light), 0.0);
+    float shade = 0.45 + 0.55 * max(dot(normal, light), 0.0);
+    if (aCell.z < 0.0) shade = 0.35 + 0.65 * max(dot(normal, normalize(vec3(-0.4, -1.0, 0.6))), 0.0);
     float age = aCell.y / uGrid.y;                 // 0 = now, 1 = oldest
     float fade = 1.0 - 0.65 * age;
     // Colour by level; base of each bar a little darker for depth.
