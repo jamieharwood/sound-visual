@@ -23,6 +23,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.WindowManager
+import android.view.View
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -39,6 +42,9 @@ class MainActivity : Activity() {
     private lateinit var levelControl: LinearLayout
     private lateinit var levelSlider: SeekBar
     private lateinit var levelText: TextView
+    private lateinit var autoToggle: TextView
+    private lateinit var levelExpanded: LinearLayout
+    private lateinit var levelCollapsed: TextView
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
 
     private var source: CaptureSource = CaptureSource.Microphone
@@ -66,10 +72,12 @@ class MainActivity : Activity() {
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
         overlay = LabelOverlayView(this, renderer, analyzer)
-        sourceButton = buildSourceButton()
+        sourceButton = chip("Source ▾") { showSourceDialog() }
+        renderer.palette = Palette.fromName(prefs.getString(KEY_PALETTE, null))
         // Reopen on the last source that doesn't need fresh consent.
         if (prefs.getString(KEY_SOURCE, null) == "output") source = CaptureSource.PhoneOutput
         levelControl = buildLevelControl()
+        val topBar = buildTopBar()
 
         val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(d: ScaleGestureDetector): Boolean {
@@ -103,11 +111,11 @@ class MainActivity : Activity() {
 
         val margin = dp(16)
         overlay.onInsetsChanged = { _, top, right, bottom ->
-            (sourceButton.layoutParams as FrameLayout.LayoutParams).apply {
+            (topBar.layoutParams as FrameLayout.LayoutParams).apply {
                 topMargin = margin + top
                 rightMargin = margin + right
             }
-            sourceButton.requestLayout()
+            topBar.requestLayout()
             (levelControl.layoutParams as FrameLayout.LayoutParams).apply {
                 // Sit above the controls hint the overlay draws along the bottom edge.
                 bottomMargin = margin + bottom + dp(24)
@@ -119,7 +127,7 @@ class MainActivity : Activity() {
         setContentView(FrameLayout(this).apply {
             addView(glView)
             addView(this@MainActivity.overlay)
-            addView(sourceButton, FrameLayout.LayoutParams(
+            addView(topBar, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.END,
             ).apply { topMargin = margin; rightMargin = margin })
@@ -132,6 +140,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        levelText.removeCallbacks(levelTicker)
+        levelText.post(levelTicker)
         glView.onResume()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startAudio()
@@ -142,6 +152,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        levelText.removeCallbacks(levelTicker)
         // Keep capturing other apps' audio while we're in the background (the foreground
         // service keeps us alive). If we stopped, Android would remove the capture route,
         // and a player started meanwhile (e.g. pressing play in Spotify) would bypass it
@@ -184,73 +195,190 @@ class MainActivity : Activity() {
 
     // --- Source selection -------------------------------------------------------------
 
-    private fun buildSourceButton() = TextView(this).apply {
-        text = "Source ▾"
+    /** Rounded translucent chip used for the on-screen buttons. */
+    private fun chipBackground() = GradientDrawable().apply {
+        cornerRadius = dp(20).toFloat()
+        setColor(Color.argb(170, 30, 40, 60))
+        setStroke(dp(1), Color.argb(120, 190, 205, 230))
+    }
+
+    private fun chip(label: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
         setTextColor(Color.WHITE)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         setPadding(dp(16), dp(10), dp(16), dp(10))
-        background = GradientDrawable().apply {
-            cornerRadius = dp(20).toFloat()
-            setColor(Color.argb(170, 30, 40, 60))
-            setStroke(dp(1), Color.argb(120, 190, 205, 230))
-        }
+        background = chipBackground()
         isClickable = true
-        setOnClickListener { showSourceDialog() }
+        setOnClickListener { onClick() }
     }
 
-    /** "Level" slider: shifts every bar by -30..+30 dB. Remembered separately per source. */
+    /** Top-right buttons: Colours and Source. */
+    private fun buildTopBar() = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        addView(chip("Colours ▾") { showPaletteDialog() })
+        addView(sourceButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { leftMargin = dp(10) })
+    }
+
+    // --- Colours -----------------------------------------------------------------------
+
+    private fun showPaletteDialog() {
+        val palettes = Palette.entries
+        val adapter = object : BaseAdapter() {
+            override fun getCount() = palettes.size
+            override fun getItem(position: Int) = palettes[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                val p = palettes[position]
+                return LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(24), dp(12), dp(24), dp(12))
+                    addView(View(context).apply {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.LEFT_RIGHT, p.previewColors,
+                        ).apply { cornerRadius = dp(4).toFloat() }
+                    }, LinearLayout.LayoutParams(dp(140), dp(22)))
+                    addView(TextView(context).apply {
+                        text = if (p == renderer.palette) "${p.label}  ✓" else p.label
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                        setPadding(dp(20), 0, 0, 0)
+                    })
+                }
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Graph colours")
+            .setAdapter(adapter) { _, which ->
+                renderer.palette = palettes[which]
+                prefs.edit().putString(KEY_PALETTE, palettes[which].name).apply()
+            }
+            .show()
+    }
+
+    // --- Level ---------------------------------------------------------------------------
+
+    /**
+     * Level panel (bottom right): Auto toggle, current level, a slider that shifts every bar
+     * by -30..+30 dB, and ✕ to collapse it to a small "Level ▴" chip. Manual level and Auto
+     * are remembered per source; collapsed/expanded is remembered globally.
+     */
     private fun buildLevelControl(): LinearLayout {
         levelText = TextView(this).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            minWidth = dp(110)
+            minWidth = dp(105)
+        }
+        autoToggle = TextView(this).apply {
+            text = "Auto"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            isClickable = true
+            setOnClickListener { setAuto(!analyzer.autoLevel, save = true) }
         }
         levelSlider = SeekBar(this).apply {
-            max = (MAX_GAIN_DB - MIN_GAIN_DB).toInt()
+            max = (AudioAnalyzer.MAX_GAIN_DB - AudioAnalyzer.MIN_GAIN_DB).toInt()
             progressTintList = android.content.res.ColorStateList.valueOf(Color.rgb(120, 200, 255))
             thumbTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar, progress: Int, fromUser: Boolean) {
-                    val gain = progress + MIN_GAIN_DB
-                    applyGain(gain)
+                    val gain = progress + AudioAnalyzer.MIN_GAIN_DB
+                    analyzer.gainDb = gain
+                    updateLevelText()
                     if (fromUser) prefs.edit().putFloat(gainKey(source), gain).apply()
                 }
                 override fun onStartTrackingTouch(bar: SeekBar) = Unit
                 override fun onStopTrackingTouch(bar: SeekBar) = Unit
             })
         }
+        val hide = TextView(this).apply {
+            text = "✕"
+            contentDescription = "Hide level control"
+            setTextColor(Color.argb(200, 220, 230, 250))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setPadding(dp(10), dp(6), dp(8), dp(6))
+            isClickable = true
+            setOnClickListener { setLevelHidden(true) }
+        }
+        levelExpanded = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(autoToggle)
+            addView(levelText, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { leftMargin = dp(10) })
+            addView(levelSlider, LinearLayout.LayoutParams(dp(170), LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(hide)
+        }
+        levelCollapsed = TextView(this).apply {
+            text = "Level ▴"
+            contentDescription = "Show level control"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+        }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(6), dp(6), dp(6))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(20).toFloat()
-                setColor(Color.argb(170, 30, 40, 60))
-                setStroke(dp(1), Color.argb(120, 190, 205, 230))
-            }
-            addView(levelText)
-            addView(levelSlider, LinearLayout.LayoutParams(dp(220), LinearLayout.LayoutParams.WRAP_CONTENT))
+            setPadding(dp(8), dp(6), dp(6), dp(6))
+            background = chipBackground()
+            addView(levelExpanded)
+            addView(levelCollapsed)
+            setOnClickListener { if (levelCollapsed.visibility == View.VISIBLE) setLevelHidden(false) }
+            setLevelHidden(prefs.getBoolean(KEY_LEVEL_HIDDEN, false), container = this)
         }
     }
 
-    private fun gainKey(s: CaptureSource) = "gain_" + when (s) {
+    private fun setLevelHidden(hidden: Boolean, container: LinearLayout = levelControl) {
+        levelExpanded.visibility = if (hidden) View.GONE else View.VISIBLE
+        levelCollapsed.visibility = if (hidden) View.VISIBLE else View.GONE
+        container.isClickable = hidden
+        prefs.edit().putBoolean(KEY_LEVEL_HIDDEN, hidden).apply()
+    }
+
+    private fun gainKey(s: CaptureSource) = "gain_" + sourceKey(s)
+    private fun autoKey(s: CaptureSource) = "auto_" + sourceKey(s)
+    private fun sourceKey(s: CaptureSource) = when (s) {
         CaptureSource.Microphone -> "mic"
         CaptureSource.PhoneOutput -> "output"
         is CaptureSource.Playback -> "capture"
     }
 
-    /** Load this source's saved level into the slider (which applies it). */
-    private fun restoreGain() {
-        val gain = prefs.getFloat(gainKey(source), 0f).coerceIn(MIN_GAIN_DB, MAX_GAIN_DB)
-        val progress = (gain - MIN_GAIN_DB).toInt()
-        if (levelSlider.progress == progress) applyGain(gain) else levelSlider.progress = progress
+    /** Load this source's saved manual level and Auto setting. */
+    private fun restoreLevel() {
+        val gain = prefs.getFloat(gainKey(source), 0f)
+            .coerceIn(AudioAnalyzer.MIN_GAIN_DB, AudioAnalyzer.MAX_GAIN_DB)
+        analyzer.gainDb = gain
+        levelSlider.progress = (gain - AudioAnalyzer.MIN_GAIN_DB).toInt()
+        // Phone output's data is normalised by Android, so Auto is the sensible default there.
+        setAuto(prefs.getBoolean(autoKey(source), source is CaptureSource.PhoneOutput), save = false)
     }
 
-    private fun applyGain(gain: Float) {
-        analyzer.gainDb = gain
-        levelText.text = "Level %+d dB".format(gain.toInt())
-        // Bars show (dB + gain), so the axis must read gain lower to stay truthful.
-        renderer.setDbRange(analyzer.floorDb - gain, analyzer.ceilDb - gain, analyzer.relativeLevels)
+    private fun setAuto(on: Boolean, save: Boolean) {
+        analyzer.autoLevel = on
+        if (save) prefs.edit().putBoolean(autoKey(source), on).apply()
+        autoToggle.background = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+            if (on) setColor(Color.rgb(120, 200, 255)) else setStroke(dp(1), Color.argb(160, 190, 205, 230))
+        }
+        autoToggle.setTextColor(if (on) Color.rgb(10, 20, 35) else Color.WHITE)
+        levelSlider.isEnabled = !on
+        levelSlider.alpha = if (on) 0.35f else 1f
+        updateLevelText()
+    }
+
+    private fun updateLevelText() {
+        val gain = if (analyzer.autoLevel) analyzer.effectiveGainDb else analyzer.gainDb
+        levelText.text = "%s %+d dB".format(if (analyzer.autoLevel) "Auto" else "Level", Math.round(gain))
+    }
+
+    /** While Auto is on, refresh the displayed level a few times a second. */
+    private val levelTicker = object : Runnable {
+        override fun run() {
+            if (analyzer.autoLevel) updateLevelText()
+            levelText.postDelayed(this, 250)
+        }
     }
 
     private fun showSourceDialog() {
@@ -384,7 +512,7 @@ class MainActivity : Activity() {
         }
         if (analyzer.start(source)) {
             renderer.setHistorySeconds(analyzer.historySeconds)
-            restoreGain()
+            restoreLevel()
             overlay.message = null
         } else if (source is CaptureSource.Playback) {
             // Can't reuse this consent; go back to the mic rather than show a dead source.
@@ -403,7 +531,7 @@ class MainActivity : Activity() {
         private const val REQ_AUDIO = 1
         private const val REQ_CAPTURE = 2
         private const val KEY_SOURCE = "source"
-        private const val MIN_GAIN_DB = -30f
-        private const val MAX_GAIN_DB = 30f
+        private const val KEY_PALETTE = "palette"
+        private const val KEY_LEVEL_HIDDEN = "level_hidden"
     }
 }

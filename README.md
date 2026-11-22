@@ -18,7 +18,7 @@ Tap **Source ▾** (top right) to choose what to visualise:
 | Source | What it hears | Notes |
 |---|---|---|
 | **Microphone** | The room | Real dBFS scale. Default. |
-| **Phone output** | Everything the phone is playing, **including Spotify** | Uses Android's `Visualizer` on the output mix: 8-bit, ~20 rows/s (~3.2 s of history). Android normalises this signal, so bar height is **relative to the loudest recent band** ("dB vs peak") rather than absolute dBFS. No consent prompt. |
+| **Phone output** | Everything the phone is playing, **including Spotify** | Uses Android's `Visualizer` on the output mix: 8-bit, ~20 rows/s (~3.2 s of history). Android normalises this signal, so it shows a 40 dB window and starts with **Auto** level on. No consent prompt. |
 | **Capture one app…** | A single app's audio (Android 10+) | Higher quality (16-bit, ~43 rows/s) via `AudioPlaybackCapture`. Needs the screen-recording consent prompt each time and shows a notification while running. Keeps capturing in the background so you can switch to the other app and press play. |
 | **Capture all apps** | All capturable media/game audio (Android 10+) | As above, without the per-app filter. |
 
@@ -29,10 +29,17 @@ output** for these. Capture only sees streams an app opens *after* capture start
 The last Microphone / Phone output choice is remembered between launches (capture sources need
 fresh consent, so they aren't).
 
-## Level slider
+## Level, Auto level and colours
 
-The **Level** slider (bottom right) shifts every bar by −30 … +30 dB. The volume axis labels move
-with it so they stay accurate, and each source remembers its own setting.
+- **Level panel** (bottom right): the slider shifts every bar by −30 … +30 dB, and the volume
+  axis labels move with it so they stay accurate.
+- **Auto** (on the Level panel): the app picks the level itself, keeping the loudest band of
+  the last few seconds just under the top of the grid. It reacts instantly to louder sound and
+  eases back up over quiet passages (~3 dB/s). On by default for Phone output.
+- **✕** collapses the panel to a small **Level ▴** chip; tap the chip to bring it back.
+- **Colours ▾** (top right): Spectrum, Fire, Ocean, Neon, Matrix, Sunset or Mono.
+
+Level, Auto (per source), the colour scheme and whether the panel is hidden are all remembered.
 
 ## Controls
 
@@ -40,7 +47,8 @@ with it so they stay accurate, and each source remembers its own setting.
 - **Pinch** to zoom
 - **Tap** to pause/resume
 - **Double-tap** to reset the view
-- **Source ▾** to change the sound source, **Level** slider to raise/lower the bars
+- **Source ▾** to change the sound source, **Colours ▾** for the colour scheme
+- **Level** panel to raise/lower the bars or turn on **Auto**; **✕** hides it
 
 ## How it works
 

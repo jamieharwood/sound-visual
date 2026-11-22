@@ -33,6 +33,9 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     private val xLeft = -halfW - 1f
     private val xRight = halfW + 1f
 
+    /** Bar colour scheme; set from the UI thread, read on the GL thread every frame. */
+    @Volatile var palette: Palette = Palette.SPECTRUM
+
     // Camera, driven from the UI thread.
     @Volatile var yawDeg = DEFAULT_YAW
     @Volatile var pitchDeg = DEFAULT_PITCH
@@ -42,8 +45,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
 
     // Filled in by buildLabels(), so they must be declared before `labels`.
     private var historyLabel: Label? = null
-    private var volumeTitle: Label? = null
-    /** Volume tick labels with their fixed height (0..1), relabelled by [setDbRange]. */
+    /** Volume tick labels with their fixed height (0..1), relabelled by [updateDbLabels]. */
     private val dbLabels = mutableListOf<Pair<Label, Float>>()
 
     val labels: List<Label> = buildLabels()
@@ -113,6 +115,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glUniformMatrix4fv(glGetUniformLocation(barProgram, "uMvp"), 1, false, mvp, 0)
         glUniform2f(glGetUniformLocation(barProgram, "uGrid"), cols.toFloat(), rows.toFloat())
         glUniform1f(glGetUniformLocation(barProgram, "uHeight"), HEIGHT_SCALE)
+        glUniform3fv(glGetUniformLocation(barProgram, "uStops"), Palette.STOPS, palette.stops, 0)
         glBindVertexArray(barVao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, CUBE_VERTS, cols * rows)
 
@@ -123,6 +126,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glDrawArrays(GL_LINES, 0, lineVertexCount)
         glBindVertexArray(0)
 
+        updateDbLabels()
         projectLabels()
     }
 
@@ -141,15 +145,23 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     }
 
 
+    private var lastLabelKey = Int.MIN_VALUE
+
     /**
-     * Relabel the volume axis when the source maps a different dB range onto bar height.
-     * [relative] means the values are dB below the loudest recent band rather than dBFS.
+     * Keep the volume axis truthful: bars show (dB + gain) over the source's range, so a tick
+     * at height f reads floor + f * span - gain. Runs every frame because auto level moves
+     * the gain continuously; only rebuilds strings when the rounded values change.
      */
-    fun setDbRange(floorDb: Float, ceilDb: Float, relative: Boolean) {
+    private fun updateDbLabels() {
+        val floor = analyzer.floorDb
+        val span = analyzer.ceilDb - floor
+        val gain = analyzer.effectiveGainDb
+        val key = Math.round(floor) * 1_000_003 + Math.round(span) * 1009 + Math.round(gain)
+        if (key == lastLabelKey) return
+        lastLabelKey = key
         for ((label, fraction) in dbLabels) {
-            label.text = Math.round(floorDb + fraction * (ceilDb - floorDb)).toString()
+            label.text = Math.round(floor + fraction * span - gain).toString()
         }
-        volumeTitle?.text = if (relative) VOLUME_TITLE_RELATIVE else VOLUME_TITLE_ABSOLUTE
     }
 
     private fun historyText(seconds: Float) = "-%.1fs".format(seconds)
@@ -180,8 +192,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
             .also { historyLabel = it }
 
         out += Label("Frequency (Hz)", 0f, 0f, zFront + 10f, Label.Kind.TITLE)
-        out += Label(VOLUME_TITLE_ABSOLUTE, xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
-            .also { volumeTitle = it }
+        out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
         out += Label("Time", xRight + 4f, 0f, 0f, Label.Kind.TITLE)
         return out
     }
@@ -318,8 +329,6 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         private const val TAG = "GridRenderer"
         private const val CUBE_VERTS = 30
         const val HEIGHT_SCALE = 24f
-        private const val VOLUME_TITLE_ABSOLUTE = "Volume (dBFS)"
-        private const val VOLUME_TITLE_RELATIVE = "Volume (dB vs peak)"
         private const val DEFAULT_YAW = -28f
         private const val DEFAULT_PITCH = 26f
         private const val DEFAULT_DISTANCE = 108f
@@ -335,13 +344,13 @@ layout(location = 3) in float aLevel; // 0..1
 uniform mat4 uMvp;
 uniform vec2 uGrid;
 uniform float uHeight;
+uniform vec3 uStops[8];               // colour ramp from quiet to loud (Palette.STOPS)
 out vec3 vColor;
 
-vec3 heat(float t) {
-    t = clamp(t, 0.0, 1.0);
-    return clamp(vec3(1.5 - abs(4.0 * t - 3.0),
-                      1.5 - abs(4.0 * t - 2.0),
-                      1.5 - abs(4.0 * t - 1.0)), 0.0, 1.0);
+vec3 palette(float t) {
+    t = clamp(t, 0.0, 1.0) * 7.0;
+    int i = int(min(floor(t), 6.0));
+    return mix(uStops[i], uStops[i + 1], t - float(i));
 }
 
 void main() {
@@ -355,7 +364,7 @@ void main() {
     float age = aCell.y / uGrid.y;                 // 0 = now, 1 = oldest
     float fade = 1.0 - 0.65 * age;
     // Colour by level; base of each bar a little darker for depth.
-    vec3 c = heat(0.08 + aLevel * 0.92) * mix(0.55, 1.0, aPos.y);
+    vec3 c = palette(aLevel) * mix(0.55, 1.0, aPos.y);
     vColor = c * shade * fade;
 }
 """

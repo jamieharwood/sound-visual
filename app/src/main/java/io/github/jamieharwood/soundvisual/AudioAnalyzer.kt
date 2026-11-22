@@ -40,18 +40,21 @@ class AudioAnalyzer(
     @Volatile var floorDb = bands.floorDb; private set
     @Volatile var ceilDb = bands.ceilDb; private set
 
-    /**
-     * True when bar height is relative to the loudest recent band ([floorDb]..[ceilDb] are
-     * then "dB below peak"). Used for Phone output, whose Visualizer data is gain-normalised
-     * by Android, so absolute dBFS would just pin every bar to the top.
-     */
-    @Volatile var relativeLevels = false; private set
-
-    /** User level adjustment in dB, added to every band before it's mapped to bar height. */
+    /** Manual level adjustment in dB, added to every band before it's mapped to bar height. */
     @Volatile var gainDb = 0f
 
-    /** Reference (loudest recent band) for relative levels; falls slowly, rises instantly. */
-    private var refDb = MIN_REF_DB
+    /**
+     * Auto level: instead of [gainDb], continuously pick the gain that puts the loudest
+     * recent band just under the top of the grid. It rises at once on louder sound and eases
+     * back up when things get quiet.
+     */
+    @Volatile var autoLevel = false
+
+    /** Gain actually applied to the latest row (manual or auto), for the UI and axis labels. */
+    @Volatile var effectiveGainDb = 0f; private set
+
+    /** Loudest recent band for auto level; jumps up instantly, falls at [AUTO_RELEASE_DB_PER_SEC]. */
+    private var refDb = -200f
 
     /** Seconds of audio covered by the history (front row to back row) for the current source. */
     val historySeconds: Float get() = historyRows / rowsPerSecond
@@ -113,7 +116,7 @@ class AudioAnalyzer(
         rowsPerSecond = sampleRate.toFloat() / hopSize
         floorDb = bands.floorDb
         ceilDb = bands.ceilDb
-        relativeLevels = false
+        refDb = -200f
         running = true
         thread = Thread({ loop(record, source) }, "audio-analyzer").apply {
             priority = Thread.MAX_PRIORITY
@@ -183,7 +186,7 @@ class AudioAnalyzer(
                         if (!running) return
                         val m = minOf(n, wave.size)
                         for (i in 0 until m) samples[i] = ((wave[i].toInt() and 0xFF) - 128) / 128f
-                        processBlock(vizBands, samples, CaptureSource.PhoneOutput, relative = true)
+                        processBlock(vizBands, samples, CaptureSource.PhoneOutput)
                     }
                     override fun onFftDataCapture(viz: Visualizer, fft: ByteArray, rate: Int) = Unit
                 }, Visualizer.getMaxCaptureRate(), true, false)
@@ -202,10 +205,11 @@ class AudioAnalyzer(
         visualizer = v
         visualizerThread = ht
         rowsPerSecond = Visualizer.getMaxCaptureRate() / 1000f
-        floorDb = -RELATIVE_SPAN_DB
+        // Visualizer data is gain-normalised by Android, so music sits near full scale:
+        // show a narrower 40 dB window at the top instead of the mic's 80 dB.
+        floorDb = VISUALIZER_DISPLAY_FLOOR_DB
         ceilDb = 0f
-        relativeLevels = true
-        refDb = MIN_REF_DB
+        refDb = -200f
         lastSoundAtMs = SystemClock.elapsedRealtime()
         running = true
         return true
@@ -228,19 +232,22 @@ class AudioAnalyzer(
     }
 
     /** Analyse one block and push a history row. Called from the capture thread. */
-    private fun processBlock(
-        b: SpectrumBands,
-        samples: FloatArray,
-        source: CaptureSource,
-        relative: Boolean = false,
-    ) {
+    private fun processBlock(b: SpectrumBands, samples: FloatArray, source: CaptureSource) {
         if (paused) return
         b.process(samples)
-        if (relative) {
-            var loudest = b.floorDb
-            for (db in b.bandDb) if (db > loudest) loudest = db
-            refDb = maxOf(loudest, refDb - REF_RELEASE_DB_PER_ROW, MIN_REF_DB)
+        val floor = floorDb
+        val span = ceilDb - floor
+        // Track the loudest band; never let silence drag the reference below mid-range,
+        // or auto level would amplify the noise floor up to the top.
+        var loudest = b.floorDb
+        for (db in b.bandDb) if (db > loudest) loudest = db
+        refDb = maxOf(loudest, refDb - AUTO_RELEASE_DB_PER_SEC / rowsPerSecond, floor + span * 0.5f)
+        val gain = if (autoLevel) {
+            (ceilDb - AUTO_HEADROOM_DB - refDb).coerceIn(MIN_GAIN_DB, MAX_GAIN_DB)
+        } else {
+            gainDb
         }
+        effectiveGainDb = gain
         peakHz = b.peakHz
         rmsDb = b.rmsDb
         val now = SystemClock.elapsedRealtime()
@@ -253,12 +260,7 @@ class AudioAnalyzer(
             head = (head + 1) % historyRows
             val base = head * bandCount
             for (i in 0 until bandCount) {
-                val db = b.bandDb[i] + gainDb
-                val level = if (relative) {
-                    ((db - (refDb - RELATIVE_SPAN_DB)) / RELATIVE_SPAN_DB).coerceIn(0f, 1f)
-                } else {
-                    b.dbToLevel(db)
-                }
+                val level = ((b.bandDb[i] + gain - floor) / span).coerceIn(0f, 1f)
                 // Instant attack, gentle release so bars don't flicker.
                 val s = maxOf(level, smoothed[i] - RELEASE_PER_HOP)
                 smoothed[i] = s
@@ -325,11 +327,12 @@ class AudioAnalyzer(
         private const val RELEASE_PER_HOP = 0.06f
         private const val VISUALIZER_FLOOR_DB = -80f
         private const val VISUALIZER_CEIL_DB = 0f
-        /** dB shown from the bottom to the top of the grid in relative mode. */
-        private const val RELATIVE_SPAN_DB = 40f
-        /** Lowest reference, so near-silence stays flat instead of being scaled up. */
-        private const val MIN_REF_DB = VISUALIZER_FLOOR_DB + RELATIVE_SPAN_DB
-        /** ~3 dB/s at 20 rows/s: quiet passages slowly fill the height again. */
-        private const val REF_RELEASE_DB_PER_ROW = 0.15f
+        private const val VISUALIZER_DISPLAY_FLOOR_DB = -40f
+        /** Auto level leaves the loudest band this far below the top of the grid. */
+        private const val AUTO_HEADROOM_DB = 3f
+        /** How fast auto level lets quiet passages grow back to full height. */
+        private const val AUTO_RELEASE_DB_PER_SEC = 3f
+        const val MIN_GAIN_DB = -30f
+        const val MAX_GAIN_DB = 30f
     }
 }
