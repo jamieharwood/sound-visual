@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.os.Build
+import android.os.SystemClock
 import android.view.View
 import android.view.WindowInsets
 
@@ -18,6 +19,16 @@ class LabelOverlayView(
     /** Message shown instead of the readout, e.g. when mic permission is missing. */
     var message: String? = null
         set(value) { field = value; invalidate() }
+
+    /** Name of the current sound source, shown in the readout. */
+    var sourceLabel: String = CaptureSource.Microphone.label
+        set(value) { field = value; invalidate() }
+
+    /** Hint shown after a few seconds of digital silence; null disables it. */
+    var silenceHint: String? = null
+
+    /** Called with (left, top, right, bottom) system-bar insets so sibling views can avoid them. */
+    var onInsetsChanged: ((Int, Int, Int, Int) -> Unit)? = null
 
     private val density = resources.displayMetrics.density
     private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -45,11 +56,12 @@ class LabelOverlayView(
     private var insetLeft = 0
     private var insetTop = 0
     private var insetBottom = 0
+    private var insetRight = 0
 
     override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            insetLeft = i.left; insetTop = i.top; insetBottom = i.bottom
+            insetLeft = i.left; insetTop = i.top; insetBottom = i.bottom; insetRight = i.right
         } else {
             @Suppress("DEPRECATION")
             insetLeft = insets.systemWindowInsetLeft
@@ -57,7 +69,10 @@ class LabelOverlayView(
             insetTop = insets.systemWindowInsetTop
             @Suppress("DEPRECATION")
             insetBottom = insets.systemWindowInsetBottom
+            @Suppress("DEPRECATION")
+            insetRight = insets.systemWindowInsetRight
         }
+        onInsetsChanged?.invoke(insetLeft, insetTop, insetRight, insetBottom)
         invalidate()
         return insets
     }
@@ -81,12 +96,20 @@ class LabelOverlayView(
         } else {
             val peak = analyzer.peakHz
             val peakText = if (peak >= 1000) "%.2f kHz".format(peak / 1000) else "%.0f Hz".format(peak)
+            canvas.drawText("Source  $sourceLabel", left, y, hudPaint)
+            y += hudPaint.textSize * 1.3f
             canvas.drawText("Peak  $peakText", left, y, hudPaint)
             y += hudPaint.textSize * 1.3f
             canvas.drawText("Level  %.1f dBFS".format(analyzer.rmsDb), left, y, hudPaint)
             if (analyzer.paused) {
                 y += hudPaint.textSize * 1.3f
                 canvas.drawText("PAUSED", left, y, hudPaint)
+            } else {
+                val hint = silenceHint
+                if (hint != null && SystemClock.elapsedRealtime() - analyzer.lastSoundAtMs > SILENCE_HINT_MS) {
+                    y += hintPaint.textSize * 1.8f
+                    canvas.drawText(hint, left, y, hintPaint)
+                }
             }
         }
         canvas.drawText(
@@ -94,5 +117,9 @@ class LabelOverlayView(
             left, height - pad - insetBottom, hintPaint,
         )
         postInvalidateOnAnimation()
+    }
+
+    companion object {
+        private const val SILENCE_HINT_MS = 3000L
     }
 }

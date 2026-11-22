@@ -21,7 +21,7 @@ import kotlin.math.sin
 class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer {
 
     /** A text label anchored to a point in world space; the overlay draws it. */
-    class Label(val text: String, val x: Float, val y: Float, val z: Float, val kind: Kind) {
+    class Label(@Volatile var text: String, val x: Float, val y: Float, val z: Float, val kind: Kind) {
         enum class Kind { TICK, TITLE }
     }
 
@@ -39,6 +39,12 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     @Volatile var distance = DEFAULT_DISTANCE
 
     fun resetCamera() { yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE }
+
+    // Filled in by buildLabels(), so they must be declared before `labels`.
+    private var historyLabel: Label? = null
+    private var volumeTitle: Label? = null
+    /** Volume tick labels with their fixed height (0..1), relabelled by [setDbRange]. */
+    private val dbLabels = mutableListOf<Pair<Label, Float>>()
 
     val labels: List<Label> = buildLabels()
     /** x, y, visible(1/0) per label in screen pixels; guarded by [labelLock]. */
@@ -134,6 +140,25 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         }
     }
 
+
+    /**
+     * Relabel the volume axis when the source maps a different dB range onto bar height.
+     * [relative] means the values are dB below the loudest recent band rather than dBFS.
+     */
+    fun setDbRange(floorDb: Float, ceilDb: Float, relative: Boolean) {
+        for ((label, fraction) in dbLabels) {
+            label.text = Math.round(floorDb + fraction * (ceilDb - floorDb)).toString()
+        }
+        volumeTitle?.text = if (relative) VOLUME_TITLE_RELATIVE else VOLUME_TITLE_ABSOLUTE
+    }
+
+    private fun historyText(seconds: Float) = "-%.1fs".format(seconds)
+
+    /** Update the time-axis label when the source's row rate changes. */
+    fun setHistorySeconds(seconds: Float) {
+        historyLabel?.text = historyText(seconds)
+    }
+
     private fun bandX(hz: Float): Float = analyzer.bands.bandPosition(hz) - halfW
 
     private fun buildLabels(): List<Label> {
@@ -145,14 +170,18 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         }
         val b = analyzer.bands
         for (db in DB_TICKS) {
-            val y = b.dbToLevel(db.toFloat()) * HEIGHT_SCALE
-            out += Label("$db", xLeft - 2.5f, y, zFront, Label.Kind.TICK)
+            val fraction = b.dbToLevel(db.toFloat())
+            val label = Label("$db", xLeft - 2.5f, fraction * HEIGHT_SCALE, zFront, Label.Kind.TICK)
+            dbLabels += label to fraction
+            out += label
         }
         out += Label("now", xRight + 3f, 0f, zFront, Label.Kind.TICK)
-        out += Label("-%.1fs".format(analyzer.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
+        out += Label(historyText(analyzer.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
+            .also { historyLabel = it }
 
         out += Label("Frequency (Hz)", 0f, 0f, zFront + 10f, Label.Kind.TITLE)
-        out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
+        out += Label(VOLUME_TITLE_ABSOLUTE, xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
+            .also { volumeTitle = it }
         out += Label("Time", xRight + 4f, 0f, 0f, Label.Kind.TITLE)
         return out
     }
@@ -289,6 +318,8 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         private const val TAG = "GridRenderer"
         private const val CUBE_VERTS = 30
         const val HEIGHT_SCALE = 24f
+        private const val VOLUME_TITLE_ABSOLUTE = "Volume (dBFS)"
+        private const val VOLUME_TITLE_RELATIVE = "Volume (dB vs peak)"
         private const val DEFAULT_YAW = -28f
         private const val DEFAULT_PITCH = 26f
         private const val DEFAULT_DISTANCE = 108f
