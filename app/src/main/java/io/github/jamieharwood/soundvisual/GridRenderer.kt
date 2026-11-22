@@ -51,13 +51,15 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     @Volatile var yawDeg = DEFAULT_YAW
     @Volatile var pitchDeg = DEFAULT_PITCH
     @Volatile var distance = DEFAULT_DISTANCE
+    /** Camera roll around its viewing direction (anticlockwise, degrees); Tilt view sets it. */
+    @Volatile var rollDeg = 0f
 
     /** Point the camera looks at, offset from the grid centre (world units). */
     @Volatile var panX = 0f
     @Volatile var panZ = 0f
 
     fun resetCamera() {
-        yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE
+        yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE; rollDeg = 0f
         panX = 0f; panZ = 0f
         tourSegmentMs = 0L
     }
@@ -175,7 +177,19 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         val ex = tx + (distance * sin(yaw) * cos(pitch)).toFloat()
         val ey = cy + (distance * sin(pitch)).toFloat()
         val ez = tz + (distance * cos(yaw) * cos(pitch)).toFloat()
-        Matrix.setLookAtM(view, 0, ex, ey, ez, tx, cy, tz, 0f, 1f, 0f)
+        // Up vector, rolled around the viewing direction. Built from yaw/pitch rather than a
+        // cross product with world-up so it stays well defined looking straight down or up.
+        val cosYaw = cos(yaw).toFloat(); val sinYaw = sin(yaw).toFloat()
+        val cosP = cos(pitch).toFloat(); val sinP = sin(pitch).toFloat()
+        val rx = cosYaw; val rz = -sinYaw                                   // camera right
+        val ux = -sinP * sinYaw; val uy = cosP; val uz = -sinP * cosYaw     // camera up (unrolled)
+        val roll = Math.toRadians(rollDeg.toDouble())
+        val cr = cos(roll).toFloat(); val sr = sin(roll).toFloat()
+        // Rolling the camera anticlockwise tips its up vector towards its left.
+        Matrix.setLookAtM(
+            view, 0, ex, ey, ez, tx, cy, tz,
+            ux * cr - rx * sr, uy * cr, uz * cr - rz * sr,
+        )
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
         // Upload newest levels.

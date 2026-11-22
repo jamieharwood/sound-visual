@@ -23,7 +23,8 @@ import kotlin.math.sqrt
  * Height comes from the direction the back points. Relative to the pose when Tilt view starts:
  *  - turning the phone left/right orbits the camera around the graph,
  *  - tipping it back to look down (as at a table) raises the camera; tilting the top
- *    towards you lowers it, down to looking up from below at the right channel.
+ *    towards you lowers it, down to looking up from below at the right channel,
+ *  - twisting it like a steering wheel rolls the view so the graph stays level with the room.
  *
  * Zoom comes from [setPushPull], fed with the phone's real movement measured by [ArTracker]:
  * moving the phone away from you zooms in, pulling it back zooms out.
@@ -59,6 +60,7 @@ class TiltController(
     private var lastAzimuthDelta = 0f
     private var smoothYaw = 0f
     private var smoothElevation = 0f
+    private var smoothRoll = 0f
     private var running = false
     private var lastDisplayRotation = -1
 
@@ -72,6 +74,7 @@ class TiltController(
     }
 
     fun stop() {
+        renderer.rollDeg = 0f // other view modes are always level
         if (!running) return
         sensorManager.unregisterListener(this)
         running = false
@@ -133,6 +136,9 @@ class TiltController(
         // World direction of that edge (east, north): R * (dx, dy, 0).
         val rightEast = rotation[0] * dx + rotation[1] * dy
         val rightNorth = rotation[3] * dx + rotation[4] * dy
+        val rightUp = rotation[6] * dx + rotation[7] * dy
+        // Roll: how far the screen's right edge is raised above level (anticlockwise twist).
+        val roll = Math.toDegrees(asin(rightUp.coerceIn(-1f, 1f).toDouble())).toFloat()
         // Facing direction = right edge turned 90° anticlockwise in the horizontal plane.
         val faceEast = -rightNorth
         val faceNorth = rightEast
@@ -154,9 +160,13 @@ class TiltController(
         // Light smoothing to hide sensor jitter without feeling laggy.
         smoothYaw += wrap(azimuthDelta - smoothYaw) * SMOOTHING
         smoothElevation += ((elevation - refElevation) - smoothElevation) * SMOOTHING
+        smoothRoll += (roll - smoothRoll) * SMOOTHING
 
         // Turning right swings the view right; looking down (negative elevation) raises the camera.
         renderer.yawDeg = baseYaw - smoothYaw
+        // Absolute roll (not relative to the start pose), so the graph is level with the room.
+        // Sign checked on a real device: the graph must turn against the twist.
+        renderer.rollDeg = -smoothRoll
         renderer.pitchDeg = (basePitch - smoothElevation).coerceIn(MIN_PITCH, MAX_PITCH)
     }
 
