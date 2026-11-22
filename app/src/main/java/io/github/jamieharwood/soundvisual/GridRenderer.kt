@@ -90,8 +90,9 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         val cy = HEIGHT_SCALE * 0.25f
         val ex = (distance * sin(yaw) * cos(pitch)).toFloat()
         val ey = cy + (distance * sin(pitch)).toFloat()
-        val ez = (distance * cos(yaw) * cos(pitch)).toFloat()
-        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, 0f, 0f, 1f, 0f)
+        val tz = halfD * 0.2f
+        val ez = tz + (distance * cos(yaw) * cos(pitch)).toFloat()
+        Matrix.setLookAtM(view, 0, ex, ey, ez, 0f, cy, tz, 0f, 1f, 0f)
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
         // Upload newest levels.
@@ -150,7 +151,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         out += Label("now", xRight + 3f, 0f, zFront, Label.Kind.TICK)
         out += Label("-%.1fs".format(analyzer.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
 
-        out += Label("Frequency (Hz)", 0f, 0f, zFront + 6f, Label.Kind.TITLE)
+        out += Label("Frequency (Hz)", 0f, 0f, zFront + 10f, Label.Kind.TITLE)
         out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 3f, zFront, Label.Kind.TITLE)
         out += Label("Time", xRight + 4f, 0f, 0f, Label.Kind.TITLE)
         return out
@@ -289,8 +290,8 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         private const val CUBE_VERTS = 30
         const val HEIGHT_SCALE = 24f
         private const val DEFAULT_YAW = -28f
-        private const val DEFAULT_PITCH = 30f
-        private const val DEFAULT_DISTANCE = 110f
+        private const val DEFAULT_PITCH = 26f
+        private const val DEFAULT_DISTANCE = 108f
 
         private val FREQ_TICKS = floatArrayOf(50f, 100f, 200f, 500f, 1000f, 2000f, 5000f, 10000f)
         private val DB_TICKS = intArrayOf(-80, -60, -40, -20)
