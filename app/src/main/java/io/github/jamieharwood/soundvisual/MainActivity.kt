@@ -15,6 +15,7 @@ import android.media.projection.MediaProjectionManager
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
@@ -44,6 +45,9 @@ class MainActivity : Activity() {
     private lateinit var tilt: TiltController
     private lateinit var ar: ArTracker
     private lateinit var wear: WearBridge
+    /** Off screen but still analysing because a watch is watching (see [StreamService]). */
+    private var streamingForWatch = false
+    private val handler = Handler(Looper.getMainLooper())
     private var isActive = false   // between onResume and onPause
     private var arUnavailableShown = false
 
@@ -207,6 +211,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        stopStreamingForWatch(stopAnalyzer = false) // on screen again: back to normal
         levelText.removeCallbacks(levelTicker)
         levelText.post(levelTicker)
         glView.onResume()
@@ -229,7 +234,17 @@ class MainActivity : Activity() {
         // service keeps us alive). If we stopped, Android would remove the capture route,
         // and a player started meanwhile (e.g. pressing play in Spotify) would bypass it
         // for as long as that stream lives.
-        if (source !is CaptureSource.Playback) analyzer.stop()
+        if (source !is CaptureSource.Playback) {
+            if (wear.hasSubscribers && !isFinishing) {
+                // A watch is showing the graph: keep listening off screen. The service has to
+                // start now, while we're still visible – Android won't allow it later.
+                StreamService.start(this)
+                streamingForWatch = true
+                handler.postDelayed(watchCheck, WATCH_CHECK_MS)
+            } else {
+                analyzer.stop()
+            }
+        }
         glView.onPause()
         ar.pause() // after the GL thread has stopped calling into ARCore
         super.onPause()
@@ -240,6 +255,7 @@ class MainActivity : Activity() {
         analyzer.stop()
         releaseProjection()
         ar.close()
+        stopStreamingForWatch(stopAnalyzer = false)
         wear.stop()
         super.onDestroy()
     }
@@ -348,6 +364,27 @@ class MainActivity : Activity() {
     private fun currentDisplayRotation(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation ?: Surface.ROTATION_0
         else windowManager.defaultDisplay.rotation
+
+    /** While off screen for a watch: stop once no watch has asked for a while. */
+    private val watchCheck = object : Runnable {
+        override fun run() {
+            if (!streamingForWatch) return
+            val idle = SystemClock.elapsedRealtime() - wear.lastRequestMs
+            if (idle > WATCH_GRACE_MS) {
+                stopStreamingForWatch(stopAnalyzer = true)
+            } else {
+                handler.postDelayed(this, WATCH_CHECK_MS)
+            }
+        }
+    }
+
+    private fun stopStreamingForWatch(stopAnalyzer: Boolean) {
+        handler.removeCallbacks(watchCheck)
+        if (!streamingForWatch) return
+        streamingForWatch = false
+        if (stopAnalyzer && source !is CaptureSource.Playback) analyzer.stop()
+        StreamService.stop(this)
+    }
 
     private fun savedViewMode(): ViewMode {
         val name = prefs.getString(KEY_VIEW_MODE, null)
@@ -691,6 +728,9 @@ class MainActivity : Activity() {
         private const val REQ_AUDIO = 1
         private const val REQ_CAPTURE = 2
         private const val REQ_CAMERA = 3
+        private const val WATCH_CHECK_MS = 5_000L
+        /** Keep listening this long after the watch stops asking, so it can be reopened. */
+        private const val WATCH_GRACE_MS = 60_000L
         private const val KEY_SOURCE = "source"
         private const val KEY_PALETTE = "palette"
         private const val KEY_LEVEL_HIDDEN = "level_hidden"

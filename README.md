@@ -87,8 +87,12 @@ Spotify via Phone output – on your watch.
   colour scheme and whether the source is stereo. Nothing is sent while the watch isn't looking.
 - **Tilt view** (default): tilt and turn your wrist to look around the graph. **Tap** to switch
   to Auto view or Touch; **double-tap** to reset; turn the **crown / rotating bezel** to zoom.
-- The phone app must be open (it stops analysing in the background); the watch shows
-  "Open Sound Visual on your phone" until data arrives.
+- Open Sound Visual on the phone once; after that you can lock the phone or switch apps. If
+  a watch is watching when the phone app leaves the screen, it keeps listening in the
+  background (a "Sending the graph to your watch" notification shows) and stops 60 s after the
+  watch stops asking. Android doesn't allow starting the microphone from the background, so
+  once it has stopped, reopen the phone app; until then the watch shows "Open Sound Visual on
+  your phone".
 - Both apps share the renderer, palettes, spectrum maths and tilt control via the `shared`
   module, and use the same application id and signing key (required by the Data Layer).
 

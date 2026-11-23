@@ -34,6 +34,17 @@ class WearBridge(
     private val heldRight = FloatArray(WearProtocol.BANDS)
     private var holding = false
 
+    /** [SystemClock.elapsedRealtime] of the most recent request from any watch (0 = none). */
+    @Volatile var lastRequestMs = 0L; private set
+
+    /** True if a watch has asked for data within the last few seconds. */
+    val hasSubscribers: Boolean
+        get() {
+            val now = SystemClock.elapsedRealtime()
+            subscribers.entries.removeIf { now - it.value > SUBSCRIBER_TIMEOUT_MS }
+            return subscribers.isNotEmpty()
+        }
+
     fun start() {
         messages.addListener(this)
     }
@@ -46,7 +57,8 @@ class WearBridge(
     override fun onMessageReceived(event: MessageEvent) {
         when (event.path) {
             WearProtocol.PATH_SUBSCRIBE -> {
-                if (subscribers.put(event.sourceNodeId, SystemClock.elapsedRealtime()) == null) {
+                lastRequestMs = SystemClock.elapsedRealtime()
+                if (subscribers.put(event.sourceNodeId, lastRequestMs) == null) {
                     Log.i(TAG, "watch ${event.sourceNodeId} subscribed")
                 }
             }

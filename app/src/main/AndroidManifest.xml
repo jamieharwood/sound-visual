@@ -10,6 +10,8 @@
     <!-- Capturing other apps' audio needs a mediaProjection foreground service. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Keep listening off screen while the Wear OS companion is watching. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- List launchable apps so the user can pick one as the sound source. -->
@@ -46,5 +48,10 @@
             android:name=".CaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".StreamService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 </manifest>
