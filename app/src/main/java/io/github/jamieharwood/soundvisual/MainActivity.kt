@@ -43,6 +43,7 @@ class MainActivity : Activity() {
     private lateinit var viewButton: TextView
     private lateinit var tilt: TiltController
     private lateinit var ar: ArTracker
+    private lateinit var wear: WearBridge
     private var isActive = false   // between onResume and onPause
     private var arUnavailableShown = false
 
@@ -80,6 +81,9 @@ class MainActivity : Activity() {
             runOnUiThread { onCaptureLost(lostSource) }
         }
         renderer = GridRenderer(analyzer)
+        wear = WearBridge(this, analyzer) { renderer.palette }
+        analyzer.onRow = { left, right -> wear.onRow(left, right) }
+        wear.start()
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setEGLConfigChooser(8, 8, 8, 8, 16, 4)
@@ -105,10 +109,10 @@ class MainActivity : Activity() {
                 if (viewMode == ViewMode.TILT) {
                     // Tilt view owns the distance (push/pull zoom); pinch moves its baseline.
                     tilt.baseDistance = (tilt.baseDistance / d.scaleFactor)
-                        .coerceIn(TiltController.MIN_DISTANCE, TiltController.MAX_DISTANCE)
+                        .coerceIn(renderer.minDistance, renderer.maxDistance)
                 } else {
                     renderer.distance = (renderer.distance / d.scaleFactor)
-                        .coerceIn(TiltController.MIN_DISTANCE, TiltController.MAX_DISTANCE)
+                        .coerceIn(renderer.minDistance, renderer.maxDistance)
                 }
                 return true
             }
@@ -236,6 +240,7 @@ class MainActivity : Activity() {
         analyzer.stop()
         releaseProjection()
         ar.close()
+        wear.stop()
         super.onDestroy()
     }
 

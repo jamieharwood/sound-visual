@@ -33,6 +33,9 @@ android {
 }
 
 dependencies {
+    implementation(project(":shared"))
+    // Wearable Data Layer: streams the graph to the Wear OS companion.
+    implementation("com.google.android.gms:play-services-wearable:19.0.0")
     // ARCore: tracks the phone's real position for Tilt view's push/pull zoom.
     implementation("com.google.ar:core:1.56.0")
     testImplementation("junit:junit:4.13.2")

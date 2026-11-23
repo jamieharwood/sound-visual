@@ -23,15 +23,24 @@ import kotlin.random.Random
  *       right channel hangs below it (−)
  *   Z = time (newest row at the front, older rows recede)
  */
-class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer {
+class GridRenderer(private val feed: SpectrumFeed) : GLSurfaceView.Renderer {
 
     /** A text label anchored to a point in world space; the overlay draws it. */
     class Label(@Volatile var text: String, val x: Float, val y: Float, val z: Float, val kind: Kind) {
         enum class Kind { TICK, TITLE }
     }
 
-    private val cols = analyzer.bandCount
-    private val rows = analyzer.historyRows
+    private val cols = feed.bandCount
+    private val rows = feed.historyRows
+
+    /** Geometry scales with the grid so smaller grids (e.g. the watch's) frame the same way. */
+    private val scale = cols / 64f
+    /** World-space height of a full-scale bar. */
+    val heightScale = BASE_HEIGHT * scale
+    private val defaultDistance = BASE_DISTANCE * scale
+    /** Closest zoom: keeps the camera outside the graph (which extends above and below). */
+    val minDistance = 60f * scale
+    val maxDistance = 280f * scale
     private val halfW = cols / 2f
     private val halfD = rows / 2f
     private val zFront = halfD
@@ -50,7 +59,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     // Camera, driven from the UI thread.
     @Volatile var yawDeg = DEFAULT_YAW
     @Volatile var pitchDeg = DEFAULT_PITCH
-    @Volatile var distance = DEFAULT_DISTANCE
+    @Volatile var distance = defaultDistance
     /** Camera roll around its viewing direction (anticlockwise, degrees); Tilt view sets it. */
     @Volatile var rollDeg = 0f
 
@@ -59,7 +68,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     @Volatile var panZ = 0f
 
     fun resetCamera() {
-        yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = DEFAULT_DISTANCE; rollDeg = 0f
+        yawDeg = DEFAULT_YAW; pitchDeg = DEFAULT_PITCH; distance = defaultDistance; rollDeg = 0f
         panX = 0f; panZ = 0f
         tourSegmentMs = 0L
     }
@@ -92,9 +101,9 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
             tourFrom[3] = panX; tourFrom[4] = panZ
             tourTo[0] = Random.nextFloat() * 140f - 70f        // yaw: left ↔ right of the grid
             tourTo[1] = -40f + Random.nextFloat() * 100f       // pitch: from below ↔ high overview
-            tourTo[2] = 70f + Random.nextFloat() * 90f         // distance: close-up ↔ wide
+            tourTo[2] = (70f + Random.nextFloat() * 90f) * scale // distance: close-up ↔ wide
             // Close views look at a random region; wide views stay near the centre.
-            val roam = ((160f - tourTo[2]) / 90f).coerceIn(0f, 1f)
+            val roam = ((160f * scale - tourTo[2]) / (90f * scale)).coerceIn(0f, 1f)
             tourTo[3] = (Random.nextFloat() * 2f - 1f) * halfW * 0.6f * roam
             tourTo[4] = (Random.nextFloat() * 2f - 1f) * halfD * 0.5f * roam
             tourStartMs = now
@@ -193,7 +202,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         Matrix.multiplyMM(mvp, 0, proj, 0, view, 0)
 
         // Upload newest levels.
-        analyzer.snapshot(levels)
+        feed.snapshot(levels)
         levelBuffer.position(0)
         levelBuffer.put(levels).position(0)
         glBindBuffer(GL_ARRAY_BUFFER, levelVbo)
@@ -203,7 +212,7 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         glUseProgram(barProgram)
         glUniformMatrix4fv(glGetUniformLocation(barProgram, "uMvp"), 1, false, mvp, 0)
         glUniform2f(glGetUniformLocation(barProgram, "uGrid"), cols.toFloat(), rows.toFloat())
-        glUniform1f(glGetUniformLocation(barProgram, "uHeight"), HEIGHT_SCALE)
+        glUniform1f(glGetUniformLocation(barProgram, "uHeight"), heightScale)
         glUniform3fv(glGetUniformLocation(barProgram, "uStops"), Palette.STOPS, palette.stops, 0)
         glBindVertexArray(barVao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, CUBE_VERTS, 2 * cols * rows)
@@ -242,9 +251,9 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
      * the gain continuously; only rebuilds strings when the rounded values change.
      */
     private fun updateDbLabels() {
-        val floor = analyzer.floorDb
-        val span = analyzer.ceilDb - floor
-        val gain = analyzer.effectiveGainDb
+        val floor = feed.floorDb
+        val span = feed.ceilDb - floor
+        val gain = feed.effectiveGainDb
         val key = Math.round(floor) * 1_000_003 + Math.round(span) * 1009 + Math.round(gain)
         if (key == lastLabelKey) return
         lastLabelKey = key
@@ -260,33 +269,35 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         historyLabel?.text = historyText(seconds)
     }
 
-    private fun bandX(hz: Float): Float = analyzer.bands.bandPosition(hz) - halfW
+    private fun bandX(hz: Float): Float = feed.bandPosition(hz) - halfW
+
+    /** Height (0..1) of a volume tick on the default dBFS scale. */
+    private fun tickFraction(db: Int) = (db - TICK_FLOOR_DB) / (TICK_CEIL_DB - TICK_FLOOR_DB)
 
     private fun buildLabels(): List<Label> {
         val out = mutableListOf<Label>()
         for (hz in FREQ_TICKS) {
-            if (hz < analyzer.bands.minHz || hz > analyzer.bands.maxHz) continue
+            if (hz < feed.minHz || hz > feed.maxHz) continue
             val text = if (hz >= 1000) "${(hz / 1000).toInt()}k" else hz.toInt().toString()
             out += Label(text, bandX(hz), 0f, zFront + 2.5f, Label.Kind.TICK)
         }
-        val b = analyzer.bands
         for (db in DB_TICKS) {
-            val fraction = b.dbToLevel(db.toFloat())
+            val fraction = tickFraction(db)
             // Same dB value on both sides: up for the left channel, down for the right.
             for (side in floatArrayOf(1f, -1f)) {
-                val label = Label("$db", xLeft - 2.5f, side * fraction * HEIGHT_SCALE, zFront, Label.Kind.TICK)
+                val label = Label("$db", xLeft - 2.5f, side * fraction * heightScale, zFront, Label.Kind.TICK)
                 dbLabels += label to fraction
                 out += label
             }
         }
-        out += Label("Left +", xLeft - 1f, HEIGHT_SCALE + 1.5f, zFront, Label.Kind.TITLE)
-        out += Label("Right −", xLeft - 1f, -HEIGHT_SCALE - 1.5f, zFront, Label.Kind.TITLE)
+        out += Label("Left +", xLeft - 1f, heightScale + 1.5f, zFront, Label.Kind.TITLE)
+        out += Label("Right −", xLeft - 1f, -heightScale - 1.5f, zFront, Label.Kind.TITLE)
         out += Label("now", xRight + 3f, 0f, zFront, Label.Kind.TICK)
-        out += Label(historyText(analyzer.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
+        out += Label(historyText(feed.historySeconds), xRight + 3f, 0f, -halfD, Label.Kind.TICK)
             .also { historyLabel = it }
 
         out += Label("Frequency (Hz)", 0f, 0f, zFront + 10f, Label.Kind.TITLE)
-        out += Label("Volume (dBFS)", xLeft, HEIGHT_SCALE + 4.5f, zFront, Label.Kind.TITLE)
+        out += Label("Volume (dBFS)", xLeft, heightScale + 4.5f, zFront, Label.Kind.TITLE)
         out += Label("Time", xRight + 4f, 0f, 0f, Label.Kind.TITLE)
         return out
     }
@@ -361,14 +372,14 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
         for (r in 0..rows step 8) line(-halfW, 0f, front - r, halfW, 0f, front - r, 0.18f)
         // Frequency ticks in front of the grid.
         for (hz in FREQ_TICKS) {
-            if (hz < analyzer.bands.minHz || hz > analyzer.bands.maxHz) continue
+            if (hz < feed.minHz || hz > feed.maxHz) continue
             val x = bandX(hz)
             line(x, 0f, front, x, 0f, front + 1.2f, 0.7f)
         }
         // Volume axis at the front-left corner with ticks and faint back-wall guides.
-        line(xLeft, -HEIGHT_SCALE, front, xLeft, HEIGHT_SCALE, front, 0.7f)
+        line(xLeft, -heightScale, front, xLeft, heightScale, front, 0.7f)
         for (db in DB_TICKS) {
-            val h = analyzer.bands.dbToLevel(db.toFloat()) * HEIGHT_SCALE
+            val h = tickFraction(db) * heightScale
             for (y in floatArrayOf(h, -h)) {
                 line(xLeft - 0.8f, y, front, xLeft, y, front, 0.7f)
                 line(-halfW, y, back, halfW, y, back, 0.10f)
@@ -426,10 +437,13 @@ class GridRenderer(private val analyzer: AudioAnalyzer) : GLSurfaceView.Renderer
     companion object {
         private const val TAG = "GridRenderer"
         private const val CUBE_VERTS = 30
-        const val HEIGHT_SCALE = 24f
+        private const val BASE_HEIGHT = 24f
+        private const val BASE_DISTANCE = 125f
+        /** Volume ticks sit at fixed heights of the default (mic) scale; labels follow the feed. */
+        private const val TICK_FLOOR_DB = -90f
+        private const val TICK_CEIL_DB = -10f
         private const val DEFAULT_YAW = -28f
         private const val DEFAULT_PITCH = 26f
-        private const val DEFAULT_DISTANCE = 125f
         private const val TOUR_MIN_SEGMENT_MS = 6_000L
         private const val TOUR_EXTRA_SEGMENT_MS = 5_000L
         private const val TOUR_RESUME_AFTER_MS = 8_000L

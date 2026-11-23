@@ -24,9 +24,9 @@ import java.util.concurrent.TimeUnit
  */
 class AudioAnalyzer(
     private val context: Context,
-    val bandCount: Int = 64,
-    val historyRows: Int = 64,
-) {
+    override val bandCount: Int = 64,
+    override val historyRows: Int = 64,
+) : SpectrumFeed {
     val sampleRate = 44_100
     val fftSize = 2048
     val hopSize = 1024
@@ -39,11 +39,23 @@ class AudioAnalyzer(
     @Volatile var stereo = false; private set
 
     /** New history rows per second for the current source. */
-    @Volatile private var rowsPerSecond = sampleRate.toFloat() / hopSize
+    @Volatile var rowsPerSecond = sampleRate.toFloat() / hopSize; private set
+
+    /**
+     * Called on the capture thread with each new row's left and right levels (0..1, after
+     * gain). The arrays are reused between calls; copy anything you keep.
+     */
+    @Volatile var onRow: ((FloatArray, FloatArray) -> Unit)? = null
+    private val rowLeft = FloatArray(bandCount)
+    private val rowRight = FloatArray(bandCount)
 
     /** dBFS mapped to the bottom / top of a bar for the current source. */
-    @Volatile var floorDb = bands.floorDb; private set
-    @Volatile var ceilDb = bands.ceilDb; private set
+    @Volatile override var floorDb = bands.floorDb; private set
+    @Volatile override var ceilDb = bands.ceilDb; private set
+
+    override val minHz: Float get() = bands.minHz
+    override val maxHz: Float get() = bands.maxHz
+    override fun bandPosition(hz: Float) = bands.bandPosition(hz)
 
     /** Manual level adjustment in dB, added to every band before it's mapped to bar height. */
     @Volatile var gainDb = 0f
@@ -56,13 +68,13 @@ class AudioAnalyzer(
     @Volatile var autoLevel = false
 
     /** Gain actually applied to the latest row (manual or auto), for the UI and axis labels. */
-    @Volatile var effectiveGainDb = 0f; private set
+    @Volatile override var effectiveGainDb = 0f; private set
 
     /** Loudest recent band for auto level; jumps up instantly, falls at [AUTO_RELEASE_DB_PER_SEC]. */
     private var refDb = -200f
 
     /** Seconds of audio covered by the history (front row to back row) for the current source. */
-    val historySeconds: Float get() = historyRows / rowsPerSecond
+    override val historySeconds: Float get() = historyRows / rowsPerSecond
 
     private val lock = Any()
     private val ringLeft = FloatArray(bandCount * historyRows)
@@ -287,10 +299,15 @@ class AudioAnalyzer(
             head = (head + 1) % historyRows
             val base = head * bandCount
             for (i in 0 until bandCount) {
-                ringLeft[base + i] = smooth(smoothedLeft, i, (left.bandDb[i] + gain - floor) / span)
-                ringRight[base + i] = smooth(smoothedRight, i, (r.bandDb[i] + gain - floor) / span)
+                val l = smooth(smoothedLeft, i, (left.bandDb[i] + gain - floor) / span)
+                val rr = smooth(smoothedRight, i, (r.bandDb[i] + gain - floor) / span)
+                ringLeft[base + i] = l
+                ringRight[base + i] = rr
+                rowLeft[i] = l
+                rowRight[i] = rr
             }
         }
+        onRow?.invoke(rowLeft, rowRight)
     }
 
     /** Instant attack, gentle release so bars don't flicker. */
@@ -306,7 +323,7 @@ class AudioAnalyzer(
      * Copy the history into [out] (size 2 * bandCount * historyRows), newest row first:
      * the left channel's rows, then the right channel's.
      */
-    fun snapshot(out: FloatArray) {
+    override fun snapshot(out: FloatArray) {
         val perSide = bandCount * historyRows
         synchronized(lock) {
             for (r in 0 until historyRows) {

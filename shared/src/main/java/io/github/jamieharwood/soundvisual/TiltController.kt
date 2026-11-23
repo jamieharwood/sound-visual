@@ -97,8 +97,8 @@ class TiltController(
      */
     fun setPushPull(forwardMetres: Float): Float {
         val base = baseDistance.coerceAtLeast(1f)
-        val lo = ln(MIN_DISTANCE / base)
-        val hi = ln(MAX_DISTANCE / base)
+        val lo = ln(renderer.minDistance / base)
+        val hi = ln(renderer.maxDistance / base)
         // Forward (away from you) = larger camera distance = zoom out.
         zoomLog = (forwardMetres * ZOOM_PER_METRE).coerceIn(lo, hi)
         applyZoom()
@@ -107,7 +107,7 @@ class TiltController(
 
     private fun applyZoom() {
         if (baseDistance <= 0f) return
-        renderer.distance = (baseDistance * exp(zoomLog)).coerceIn(MIN_DISTANCE, MAX_DISTANCE)
+        renderer.distance = (baseDistance * exp(zoomLog)).coerceIn(renderer.minDistance, renderer.maxDistance)
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -192,8 +192,5 @@ class TiltController(
         /** Negative pitch looks up from below the centre plane, at the right channel. */
         const val MIN_PITCH = -85f
         const val MAX_PITCH = 85f
-        /** Closest zoom: keeps the camera outside the graph (which now extends above and below). */
-        const val MIN_DISTANCE = 60f
-        const val MAX_DISTANCE = 280f
     }
 }

@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "SoundVisual"
-include(":app")
+include(":app", ":shared", ":wear")

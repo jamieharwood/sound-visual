@@ -76,6 +76,22 @@ all remembered.
 - **Source ▾** to change the sound source, **Colours ▾** for the colour scheme
 - **Level** panel to raise/lower the bars or turn on **Auto**; **✕** hides it
 
+## Wear OS companion
+
+The `wear` module is a Wear OS app that mirrors whatever the phone app is showing – including
+Spotify via Phone output – on your watch.
+
+- Open Sound Visual on the phone, then on the watch. The watch asks the phone for data every
+  couple of seconds while it's on screen, and the phone streams the graph (32 bands per channel,
+  ~20 rows/s, in ~10 small messages a second) over the Wearable Data Layer, along with the
+  colour scheme and whether the source is stereo. Nothing is sent while the watch isn't looking.
+- **Tilt view** (default): tilt and turn your wrist to look around the graph. **Tap** to switch
+  to Auto view or Touch; **double-tap** to reset; turn the **crown / rotating bezel** to zoom.
+- The phone app must be open (it stops analysing in the background); the watch shows
+  "Open Sound Visual on your phone" until data arrives.
+- Both apps share the renderer, palettes, spectrum maths and tilt control via the `shared`
+  module, and use the same application id and signing key (required by the Data Layer).
+
 ## How it works
 
 - `AudioAnalyzer` – for the microphone and capture sources, records 44.1 kHz mono PCM with
@@ -98,6 +114,7 @@ Requires the Android SDK (compileSdk 35) and a full JDK 17+.
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew testDebugUnitTest    # FFT / band tests
 ./gradlew installDebug         # install on a connected device
+./gradlew :wear:assembleDebug  # Wear OS companion: wear/build/outputs/apk/debug/wear-debug.apk
 ```
 
 Min Android version: 8.0 (API 26), OpenGL ES 3.0. The app asks for microphone permission on
