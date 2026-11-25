@@ -15,9 +15,10 @@ import javax.sound.sampled.TargetDataLine
  * Captures audio on a background thread and keeps a rolling history of band levels for each
  * stereo channel, exactly like the phone app's analyzer: row 0 of a [snapshot] is the newest.
  *
- * Audio comes from PipeWire's `pw-record` (32-bit float, stereo) so the microphone, the
- * computer's output and single apps all work the same way. Without PipeWire it falls back
- * to Java Sound for the microphone only.
+ * Audio comes from a recorder process ([AudioBackend]: PipeWire's `pw-record`, or `parec`
+ * inside a snap) writing 32-bit float stereo, so the microphone, the computer's output and
+ * single apps all work the same way. Without either it falls back to Java Sound for the
+ * microphone only.
  */
 class DesktopAnalyzer(
     override val bandCount: Int = 64,
@@ -59,6 +60,8 @@ class DesktopAnalyzer(
     @Volatile var paused = false
     /** [System.currentTimeMillis] of the last block that wasn't silence. */
     @Volatile var lastSoundAtMs = 0L; private set
+    /** [System.currentTimeMillis] when the current source started. */
+    @Volatile var startedAtMs = 0L; private set
 
     /** Called on the capture thread when a source ends without [stop] (e.g. the app closed). */
     @Volatile var onCaptureLost: ((AudioSource) -> Unit)? = null
@@ -74,34 +77,20 @@ class DesktopAnalyzer(
         val input: InputStream
         val channels: Int
         val float32: Boolean
-        val recorder = PipeWire.recorder
-        if (recorder != null) {
-            val cmd = mutableListOf(
-                recorder, "--rate", "$sampleRate", "--channels", "2", "--format", "f32",
-                "--latency", "20ms", "--media-role", "Production",
-            )
-            val props = StringBuilder("{ node.name=sound-visual node.description=\"Sound Visual\"")
-            when (source) {
-                AudioSource.Microphone -> Unit
-                AudioSource.SystemOutput -> props.append(" stream.capture.sink=true")
-                is AudioSource.App -> {
-                    props.append(" stream.capture.sink=true")
-                    cmd += listOf("--target", source.serial)
-                }
-            }
-            props.append(" }")
-            cmd += listOf("-P", props.toString(), "-")
+        val backend = AudioBackend.current
+        if (backend.available) {
+            val cmd = backend.recordCommand(source, sampleRate)
             val proc = try {
                 ProcessBuilder(cmd).redirectError(ProcessBuilder.Redirect.DISCARD).start()
             } catch (e: Exception) {
-                return "Couldn't start pw-record: ${e.message}"
+                return "Couldn't start ${cmd.first().substringAfterLast('/')}: ${e.message}"
             }
             process = proc
             input = proc.inputStream
             channels = 2
             float32 = true
         } else {
-            if (source != AudioSource.Microphone) return "${source.label} needs PipeWire (pw-record)"
+            if (source != AudioSource.Microphone) return "${source.label} needs PipeWire (pw-record) or PulseAudio (parec)"
             val format = AudioFormat(sampleRate.toFloat(), 16, 2, true, false)
             val l = try {
                 AudioSystem.getTargetDataLine(format).apply { open(format, hopSize * 4 * 4); start() }
@@ -118,6 +107,7 @@ class DesktopAnalyzer(
         }
         refDb = -200f
         lastSoundAtMs = System.currentTimeMillis()
+        startedAtMs = lastSoundAtMs
         running = true
         thread = Thread({ loop(input, channels, float32, source) }, "audio-analyzer").apply {
             isDaemon = true

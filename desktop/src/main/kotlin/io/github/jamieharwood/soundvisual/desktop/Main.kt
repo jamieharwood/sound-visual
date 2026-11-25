@@ -73,6 +73,11 @@ class SoundVisualApp {
 
     fun run() {
         GLFWErrorCallback.createPrint(System.err).set()
+        // Prefer X11 (XWayland on a Wayland desktop) when it's there: GNOME draws proper title
+        // bars for X11 windows, while GLFW's native Wayland windows get none.
+        if (System.getenv("DISPLAY") != null && glfwPlatformSupported(GLFW_PLATFORM_X11)) {
+            glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_X11)
+        }
         check(glfwInit()) { "Couldn't initialise GLFW" }
         glfwDefaultWindowHints()
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3)
@@ -120,7 +125,7 @@ class SoundVisualApp {
     private fun loadSettings() {
         source = when (prefs.get("source", "output")) {
             "mic" -> AudioSource.Microphone
-            else -> if (PipeWire.recorder != null) AudioSource.SystemOutput else AudioSource.Microphone
+            else -> if (AudioBackend.current.available) AudioSource.SystemOutput else AudioSource.Microphone
         }
         renderer.palette = Palette.fromName(prefs.get("palette", null))
         viewMode = runCatching { ViewMode.valueOf(prefs.get("view_mode", "TOUCH")) }.getOrDefault(ViewMode.TOUCH)
@@ -150,6 +155,14 @@ class SoundVisualApp {
 
     private fun captureLost(lost: AudioSource) {
         if (lost != source) return
+        // Recording refused right away: in a snap that means the audio-record interface
+        // isn't connected (snapd doesn't connect it automatically).
+        if (System.getenv("SNAP") != null && System.currentTimeMillis() - analyzer.startedAtMs < 3000) {
+            sourceError = "Sound Visual isn't allowed to record yet. In a terminal, run:\n" +
+                "    snap connect sound-visual:audio-record\n" +
+                "then press S and pick a source again."
+            return
+        }
         if (lost is AudioSource.App) {
             showNotice("${lost.appName} stopped playing — showing ${AudioSource.SystemOutput.label.lowercase()}")
             startSource(AudioSource.SystemOutput)
@@ -165,12 +178,12 @@ class SoundVisualApp {
 
     private fun openMenu(m: Menu) {
         menu = if (menu == m) Menu.NONE else m
-        if (menu == Menu.SOURCE) apps = PipeWire.playingApps()
+        if (menu == Menu.SOURCE) apps = AudioBackend.current.playingApps()
     }
 
     private fun sourceChoices(): List<AudioSource> = buildList {
         add(AudioSource.Microphone)
-        if (PipeWire.recorder != null) { add(AudioSource.SystemOutput); addAll(apps) }
+        if (AudioBackend.current.available) { add(AudioSource.SystemOutput); addAll(apps) }
     }
 
     private fun setGain(db: Float) {
@@ -397,7 +410,7 @@ class SoundVisualApp {
         val step = overlay.lineHeight(Style.HUD) * 1.15f
         val err = sourceError
         if (err != null) {
-            overlay.text(Style.HUD, err, pad, y, WHITE)
+            for (line in err.split('\n')) { overlay.text(Style.HUD, line, pad, y, WHITE); y += step }
         } else {
             val peak = analyzer.peakHz
             val peakText = if (peak >= 1000) "%.2f kHz".format(peak / 1000) else "%.0f Hz".format(peak)
@@ -528,7 +541,7 @@ class SoundVisualApp {
 
     private fun drawSourceMenu() {
         val choices = sourceChoices()
-        val extra = if (PipeWire.recorder == null) 1 else if (apps.isEmpty()) 1 else 0
+        val extra = if (!AudioBackend.current.available) 1 else if (apps.isEmpty()) 1 else 0
         val w = 420f * ui
         val (x, top, rowH) = menuPanel("Sound source", choices.size + extra + if (apps.isNotEmpty()) 1 else 0, w)
         var y = top
@@ -546,7 +559,7 @@ class SoundVisualApp {
             overlay.text(Style.MENU, "${i + 1}   $name", x + 16f * ui, y + rowH * 0.68f, WHITE)
             y += rowH
         }
-        if (PipeWire.recorder == null) {
+        if (!AudioBackend.current.available) {
             overlay.text(Style.HINT, "Install pipewire-bin to capture what the computer plays", x + 16f * ui, y + rowH * 0.7f, HINT)
         } else if (apps.isEmpty()) {
             overlay.text(Style.HINT, "Start playing in an app to capture it on its own", x + 16f * ui, y + rowH * 0.7f, HINT)

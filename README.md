@@ -112,7 +112,9 @@ PipeWire and OpenGL 3.3). It shares the spectrum maths and palettes with the pho
   captured. If it stops playing, the source falls back to Computer output.
 
 Audio comes from PipeWire's `pw-record` (package `pipewire-bin`, installed by default on
-Ubuntu 22.10+). Without it, only the microphone works, through Java Sound.
+Ubuntu 22.10+). Inside the snap it uses `parec` / `pactl` instead, because strict confinement
+only allows audio through the PulseAudio protocol (which PipeWire also serves). Without either,
+only the microphone works, through Java Sound.
 
 **Controls:** left-drag to rotate, right-drag to pan, scroll to zoom, double-click or `R` to
 reset. Use **View** (`V`) to switch to Auto view's random tour. **Colours** (`C`) holds the
@@ -131,6 +133,20 @@ sudo apt install ./desktop/build/jpackage/sound-visual_1.0.0_amd64.deb
 The `.deb` bundles its own Java runtime, installs to `/opt/sound-visual` and adds a
 "sound-visual" entry to the app menu. Building it needs a full JDK 21 (for `jpackage`),
 `dpkg-deb` and `fakeroot`.
+
+### Snap
+
+`snap/snapcraft.yaml` packages the same app as a strictly confined snap (core24, amd64 and
+arm64). The build runs Gradle inside the build container and needs no Android SDK there:
+`settings.gradle.kts` only includes the Android modules when an SDK is found.
+
+```bash
+snapcraft pack --build-for=amd64                       # local build in LXD (minutes)
+sudo snap install --dangerous ./sound-visual_1.0.0_amd64.snap
+snap connect sound-visual:audio-record                 # allow recording (not automatic)
+```
+
+`snapcraft remote-build` also builds arm64 on Launchpad, but takes much longer.
 
 ## How it works
 
@@ -159,3 +175,7 @@ Requires the Android SDK (compileSdk 35) and a full JDK 17+.
 
 Min Android version: 8.0 (API 26), OpenGL ES 3.0. The app asks for microphone permission on
 first launch.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

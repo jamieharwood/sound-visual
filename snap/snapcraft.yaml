@@ -1,0 +1,65 @@
+name: sound-visual
+title: Sound Visual
+base: core24
+version: '1.0.0'
+license: MIT
+summary: Live 3D spectrum of your microphone or what your computer is playing
+description: |
+  Sound Visual draws sound as a live 3D grid of bars: frequency across, volume up
+  (left channel above the centre, right channel below) and time receding into the
+  distance.
+
+  * Listen to the microphone, everything the computer is playing, or one app on its own
+  * Rotate, pan and zoom with the mouse, or let Auto view tour the grid
+  * Auto level, a level slider and seven colour schemes
+
+  Recording needs the audio-record permission:
+    snap connect sound-visual:audio-record
+website: https://github.com/jamieharwood/sound-visual
+source-code: https://github.com/jamieharwood/sound-visual
+issues: https://github.com/jamieharwood/sound-visual/issues
+contact: https://github.com/jamieharwood/sound-visual/issues
+
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  sound-visual:
+    command: app/bin/sound-visual
+    common-id: io.github.jamieharwood.soundvisual
+    extensions: [gnome] # X11/Wayland, OpenGL drivers, fonts and desktop integration
+    plugs:
+      - audio-playback # the PulseAudio socket (pipewire-pulse); needed to connect at all
+      - audio-record   # microphone, computer output and per-app capture (connect manually)
+    environment:
+      # Java takes its home folder from the password database, not $HOME, so it would try to
+      # keep settings in the real ~/.java, which confinement blocks. Use the snap's own folder.
+      JAVA_TOOL_OPTIONS: -Duser.home=$SNAP_USER_DATA
+
+parts:
+  sound-visual:
+    plugin: nil
+    source: .
+    build-packages:
+      - openjdk-21-jdk-headless # Gradle + jpackage, which bundles a trimmed Java runtime
+      - binutils
+    stage-packages:
+      - pulseaudio-utils # parec / pactl: capture through the PulseAudio protocol
+    override-build: |
+      export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-${CRAFT_ARCH_BUILD_FOR}
+      # No Android SDK in here, so settings.gradle.kts only includes :core and :desktop.
+      ./gradlew --no-daemon --console=plain :desktop:appImage
+      mkdir -p "$CRAFT_PART_INSTALL/app"
+      cp -a desktop/build/app-image/sound-visual/. "$CRAFT_PART_INSTALL/app/"
+    prime:
+      - app
+      - usr/bin/pacat # parec is a symlink to pacat
+      - usr/bin/parec
+      - usr/bin/pactl
+      - usr/lib
+      - -usr/share/doc
+      - -usr/share/man

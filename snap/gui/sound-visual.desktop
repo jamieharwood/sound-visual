@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Sound Visual
+GenericName=Spectrum visualiser
+Comment=Live 3D spectrum of your microphone or what your computer is playing
+Exec=sound-visual
+Icon=${SNAP}/meta/gui/sound-visual.png
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=spectrum;audio;visualizer;visualiser;fft;music;
+StartupWMClass=sound-visual
