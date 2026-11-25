@@ -3,8 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// Code shared by the phone app and the Wear OS app: spectrum maths, colour palettes,
-// the 3D grid renderer and Tilt view's motion control.
+// Android code shared by the phone app and the Wear OS app: the 3D grid renderer and Tilt
+// view's motion control. Platform-neutral code (spectrum maths, palettes) lives in :core.
 android {
     namespace = "io.github.jamieharwood.soundvisual.shared"
     compileSdk = 35
@@ -20,5 +20,5 @@ android {
 }
 
 dependencies {
-    testImplementation("junit:junit:4.13.2")
+    api(project(":core"))
 }

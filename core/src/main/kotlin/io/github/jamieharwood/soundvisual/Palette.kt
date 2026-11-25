@@ -1,6 +1,5 @@
 package io.github.jamieharwood.soundvisual
 
-import android.graphics.Color
 import kotlin.math.abs
 
 /** Colour schemes for the bars: level 0 (quiet) maps to the first colour, 1 (loud) to the last. */
@@ -20,9 +19,12 @@ enum class Palette(val label: String, private val keys: List<FloatArray>?) {
         }
     }
 
-    /** ARGB colours for a gradient preview swatch. */
+    /** Opaque ARGB colours for a gradient preview swatch. */
     val previewColors: IntArray by lazy {
-        IntArray(STOPS) { i -> stops.let { Color.rgb(it[i * 3], it[i * 3 + 1], it[i * 3 + 2]) } }
+        fun byte(v: Float) = (v * 255f + 0.5f).toInt().coerceIn(0, 255)
+        IntArray(STOPS) { i ->
+            (0xFF shl 24) or (byte(stops[i * 3]) shl 16) or (byte(stops[i * 3 + 1]) shl 8) or byte(stops[i * 3 + 2])
+        }
     }
 
     private fun colorAt(t: Float): FloatArray {

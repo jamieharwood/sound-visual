@@ -1,7 +1,7 @@
 # Sound Visual
 
-An Android app that listens through the microphone and draws the sound as a live
-**3D matrix grid of bars**:
+An Android app (with a Wear OS companion and an Ubuntu desktop version) that listens through
+the microphone and draws the sound as a live **3D matrix grid of bars**:
 
 | Axis | Meaning |
 |---|---|
@@ -93,8 +93,44 @@ Spotify via Phone output – on your watch.
   watch stops asking. Android doesn't allow starting the microphone from the background, so
   once it has stopped, reopen the phone app; until then the watch shows "Open Sound Visual on
   your phone".
-- Both apps share the renderer, palettes, spectrum maths and tilt control via the `shared`
-  module, and use the same application id and signing key (required by the Data Layer).
+- Both apps share the renderer and tilt control via the `shared` module (spectrum maths,
+  palettes and the watch protocol live in the plain-Kotlin `core` module), and use the same
+  application id and signing key (required by the Data Layer).
+
+## Ubuntu desktop version
+
+The `desktop` module is the same grid in a desktop window (Ubuntu 22.04+ or any Linux with
+PipeWire and OpenGL 3.3). It shares the spectrum maths and palettes with the phone app through
+`core`.
+
+**Sound sources** (Source ▾ or `S`):
+
+- **Microphone**: the default input device.
+- **Computer output (all apps)**: everything the computer is playing, taken from the default
+  output's monitor. No setup needed.
+- **One app**: any app that's playing right now (a browser, Spotify, a game). Only that app is
+  captured. If it stops playing, the source falls back to Computer output.
+
+Audio comes from PipeWire's `pw-record` (package `pipewire-bin`, installed by default on
+Ubuntu 22.10+). Without it, only the microphone works, through Java Sound.
+
+**Controls:** left-drag to rotate, right-drag to pan, scroll to zoom, double-click or `R` to
+reset. Use **View** (`V`) to switch to Auto view's random tour. **Colours** (`C`) holds the
+same palettes as the phone. The **Level** panel has Auto (`A`), a slider (`+` / `−`) and ✕ to
+hide it (`L`). `Space` pauses, `F` / `F11` goes full screen, and `H` lists every key. Choices
+are remembered between runs.
+
+Build and run:
+
+```bash
+./gradlew :desktop:run          # run from source
+./gradlew :desktop:deb          # desktop/build/jpackage/sound-visual_1.0.0_amd64.deb
+sudo apt install ./desktop/build/jpackage/sound-visual_1.0.0_amd64.deb
+```
+
+The `.deb` bundles its own Java runtime, installs to `/opt/sound-visual` and adds a
+"sound-visual" entry to the app menu. Building it needs a full JDK 21 (for `jpackage`),
+`dpkg-deb` and `fakeroot`.
 
 ## How it works
 
@@ -105,7 +141,7 @@ Spotify via Phone output – on your watch.
   output it reads 1024-sample waveforms from `Visualizer(0)` instead.
 - `CaptureService` – the `mediaProjection` foreground service Android requires while capturing
   other apps' audio.
-- `SpectrumBands` / `Fft` – pure-Kotlin radix-2 FFT and log-band grouping (unit-tested).
+- `SpectrumBands` / `Fft` (in `core`) – pure-Kotlin radix-2 FFT and log-band grouping (unit-tested).
 - `GridRenderer` – OpenGL ES 3.0. All 64 × 64 bars are drawn in a single instanced draw call;
   per-bar levels are uploaded each frame.
 - `LabelOverlayView` – projects axis tick positions from 3D and draws the labels with Canvas.
@@ -116,7 +152,7 @@ Requires the Android SDK (compileSdk 35) and a full JDK 17+.
 
 ```bash
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest    # FFT / band tests
+./gradlew :core:test            # FFT / band / protocol tests
 ./gradlew installDebug         # install on a connected device
 ./gradlew :wear:assembleDebug  # Wear OS companion: wear/build/outputs/apk/debug/wear-debug.apk
 ```
